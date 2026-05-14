@@ -28,3 +28,4 @@ pyyaml==6.0.2
 aiofiles==24.1.0
 python-dotenv==1.0.1
 sse-starlette==2.2.1
+weasyprint==62.3

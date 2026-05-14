@@ -219,6 +219,32 @@ export const documentApi = {
     return res.data;
   },
 
+  exportHtml: async (id: number): Promise<Blob> => {
+    const res = await apiClient.post(`/documents/${id}/export`, { format: 'html' }, {
+      responseType: 'blob',
+    });
+    return res.data;
+  },
+
+  exportPdf: async (id: number): Promise<Blob> => {
+    const res = await apiClient.post(`/documents/${id}/export`, { format: 'pdf' }, {
+      responseType: 'blob',
+      timeout: 120000,
+    });
+    return res.data;
+  },
+
+  verifyLaws: async (id: number): Promise<{
+    document_id: number;
+    verification_results: any[];
+    total: number;
+  }> => {
+    const res = await apiClient.post(`/documents/${id}/verify-laws`, null, {
+      timeout: 300000,
+    });
+    return res.data;
+  },
+
   review: async (id: number): Promise<Document> => {
     const res = await apiClient.post(`/documents/${id}/review`, null, {
       timeout: 300000,
@@ -264,6 +290,199 @@ export const searchApi = {
     top_k?: number;
   }): Promise<SearchResults> => {
     const res = await apiClient.post('/search', params);
+    return res.data;
+  },
+};
+
+// ── Evidence API ──────────────────────────────────────────────────────
+
+export interface EvidenceItem {
+  id: number;
+  case_id: number;
+  type: string;
+  title: string;
+  file_path: string | null;
+  ocr_text: string | null;
+  tags: string[] | null;
+  sort_order: number;
+  analysis: string | null;
+  has_file: boolean;
+  created_at: string;
+}
+
+export const evidenceApi = {
+  list: async (caseId: number): Promise<EvidenceItem[]> => {
+    const res = await apiClient.get('/evidence', { params: { case_id: caseId } });
+    return res.data;
+  },
+
+  create: async (data: {
+    case_id: number;
+    type: string;
+    title: string;
+    tags?: string[];
+  }): Promise<EvidenceItem> => {
+    const res = await apiClient.post('/evidence', data);
+    return res.data;
+  },
+
+  upload: async (id: number, file: File): Promise<EvidenceItem> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await apiClient.post(`/evidence/${id}/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    });
+    return res.data;
+  },
+
+  get: async (id: number): Promise<EvidenceItem> => {
+    const res = await apiClient.get(`/evidence/${id}`);
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/evidence/${id}`);
+  },
+
+  analyze: async (id: number): Promise<EvidenceItem> => {
+    const res = await apiClient.post(`/evidence/${id}/analyze`, null, { timeout: 300000 });
+    return res.data;
+  },
+
+  download: async (id: number): Promise<void> => {
+    const res = await apiClient.get(`/evidence/${id}/download`, { responseType: 'blob' });
+    const url = window.URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `evidence_${id}`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  },
+};
+
+// ── LLM Settings API ──────────────────────────────────────────────────
+
+export interface LLMSetting {
+  id: number;
+  name: string;
+  base_url: string;
+  api_key_masked: string;
+  model_name: string;
+  max_tokens: number;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectivityTestResult {
+  success: boolean;
+  message: string;
+  model: string;
+  latency_ms: number;
+}
+
+export const llmSettingsApi = {
+  list: async (): Promise<LLMSetting[]> => {
+    const res = await apiClient.get('/llm-settings');
+    return res.data;
+  },
+
+  create: async (data: {
+    name: string;
+    base_url: string;
+    api_key: string;
+    model_name: string;
+    max_tokens: number;
+    is_default: boolean;
+  }): Promise<LLMSetting> => {
+    const res = await apiClient.post('/llm-settings', data);
+    return res.data;
+  },
+
+  update: async (id: number, data: {
+    name?: string;
+    base_url?: string;
+    api_key?: string;
+    model_name?: string;
+    max_tokens?: number;
+    is_default?: boolean;
+  }): Promise<LLMSetting> => {
+    const res = await apiClient.put(`/llm-settings/${id}`, data);
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/llm-settings/${id}`);
+  },
+
+  testConnectivity: async (data: {
+    base_url: string;
+    api_key: string;
+    model_name: string;
+  }): Promise<ConnectivityTestResult> => {
+    const res = await apiClient.post('/llm-settings/test-connectivity', data);
+    return res.data;
+  },
+};
+
+// ── Research API ──────────────────────────────────────────────────────
+
+export interface ResearchReport {
+  id: number;
+  query: string;
+  report: string;
+  sources_used: string[];
+  case_id: number | null;
+  created_at: string;
+}
+
+export const researchApi = {
+  create: async (data: {
+    query: string;
+    sources: string[];
+    case_id?: number;
+  }): Promise<ResearchReport> => {
+    const res = await apiClient.post('/research', data, { timeout: 300000 });
+    return res.data;
+  },
+
+  list: async (skip?: number, limit?: number): Promise<ResearchReport[]> => {
+    const res = await apiClient.get('/research', { params: { skip, limit } });
+    return res.data;
+  },
+
+  get: async (id: number): Promise<ResearchReport> => {
+    const res = await apiClient.get(`/research/${id}`);
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/research/${id}`);
+  },
+};
+
+// ── Vector API ────────────────────────────────────────────────────────
+
+export interface VectorStats {
+  cases_count: number;
+  statutes_count: number;
+  connected: boolean;
+}
+
+export const vectorApi = {
+  ingest: async (collection: string, items: any[]): Promise<any> => {
+    const res = await apiClient.post('/vector/ingest', { collection, items });
+    return res.data;
+  },
+
+  search: async (query: string, collection: string = 'all', top_k: number = 10): Promise<any> => {
+    const res = await apiClient.post('/vector/search', { query, collection, top_k });
+    return res.data;
+  },
+
+  stats: async (): Promise<VectorStats> => {
+    const res = await apiClient.get('/vector/stats');
     return res.data;
   },
 };

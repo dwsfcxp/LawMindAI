@@ -12,6 +12,7 @@ import {
   Plus,
   X,
   RotateCcw,
+  Shield,
 } from 'lucide-react';
 import { documentApi, caseApi } from '@/lib/api';
 import type { Document, Case, CaseCreate } from '@/lib/api';
@@ -46,6 +47,8 @@ export default function DocumentGenerate() {
   // UI state
   const [loading, setLoading] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<any[] | null>(null);
   const [exportLoading, setExportLoading] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editedContent, setEditedContent] = useState('');
@@ -117,19 +120,30 @@ export default function DocumentGenerate() {
     }
   };
 
-  const handleExport = async (format: 'word' | 'markdown') => {
+  const handleExport = async (format: 'word' | 'markdown' | 'html' | 'pdf') => {
     if (!generatedDoc) return;
     setExportLoading(format);
     try {
-      const blob =
-        format === 'word'
-          ? await documentApi.exportWord(generatedDoc.id)
-          : await documentApi.exportMarkdown(generatedDoc.id);
+      let blob: Blob;
+      let ext: string;
+      if (format === 'word') {
+        blob = await documentApi.exportWord(generatedDoc.id);
+        ext = 'docx';
+      } else if (format === 'html') {
+        blob = await documentApi.exportHtml(generatedDoc.id);
+        ext = 'html';
+      } else if (format === 'pdf') {
+        blob = await documentApi.exportPdf(generatedDoc.id);
+        ext = 'pdf';
+      } else {
+        blob = await documentApi.exportMarkdown(generatedDoc.id);
+        ext = 'md';
+      }
 
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${generatedDoc.title || '法律文书'}.${format === 'word' ? 'docx' : 'md'}`;
+      a.download = `${generatedDoc.title || '法律文书'}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -156,6 +170,20 @@ export default function DocumentGenerate() {
       setError('AI审校失败，请重试');
     } finally {
       setReviewLoading(false);
+    }
+  };
+
+  const handleVerifyLaws = async () => {
+    if (!generatedDoc) return;
+    setVerifyLoading(true);
+    setVerifyResult(null);
+    try {
+      const result = await documentApi.verifyLaws(generatedDoc.id);
+      setVerifyResult(result.verification_results);
+    } catch {
+      setError('法条核查失败，请重试');
+    } finally {
+      setVerifyLoading(false);
     }
   };
 
@@ -425,6 +453,18 @@ export default function DocumentGenerate() {
                   {reviewLoading ? '审校中...' : 'AI审校'}
                 </button>
                 <button
+                  onClick={handleVerifyLaws}
+                  disabled={verifyLoading}
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {verifyLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Shield className="h-3.5 w-3.5" />
+                  )}
+                  {verifyLoading ? '核查中...' : '法条核查'}
+                </button>
+                <button
                   onClick={() => handleExport('word')}
                   disabled={exportLoading === 'word'}
                   className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
@@ -448,6 +488,30 @@ export default function DocumentGenerate() {
                   )}
                   导出Markdown
                 </button>
+                <button
+                  onClick={() => handleExport('html')}
+                  disabled={exportLoading === 'html'}
+                  className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
+                >
+                  {exportLoading === 'html' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  导出HTML
+                </button>
+                <button
+                  onClick={() => handleExport('pdf')}
+                  disabled={exportLoading === 'pdf'}
+                  className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
+                >
+                  {exportLoading === 'pdf' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  导出PDF
+                </button>
               </div>
 
               {/* Review Result */}
@@ -459,6 +523,34 @@ export default function DocumentGenerate() {
                   </div>
                   <div className="whitespace-pre-wrap text-sm text-violet-900 leading-relaxed">
                     {reviewResult}
+                  </div>
+                </div>
+              )}
+
+              {/* Law Verification Result */}
+              {verifyResult && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                    <Shield className="h-4 w-4" />
+                    法条核查结果（共{verifyResult.length}条引用）
+                  </div>
+                  <div className="space-y-2">
+                    {verifyResult.map((v: any, i: number) => (
+                      <div key={i} className={`rounded-lg p-3 text-sm ${v.overall_consistent ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                        <div className="flex items-center gap-2 font-medium">
+                          {v.overall_consistent ? (
+                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          ) : (
+                            <AlertCircle className="h-4 w-4 text-red-600" />
+                          )}
+                          《{v.law_name}》{v.article_number}
+                          <span className="text-xs text-muted-foreground ml-auto">
+                            置信度: {(v.confidence * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">{v.recommendation}</p>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

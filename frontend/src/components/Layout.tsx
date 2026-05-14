@@ -10,15 +10,21 @@ import {
   Menu,
   X,
   Scale,
+  Upload,
+  BookOpen,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navItems = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard },
   { to: '/cases', label: '案件管理', icon: Briefcase },
+  { to: '/evidence', label: '证据管理', icon: Upload },
   { to: '/documents', label: '文书生成', icon: FileText },
+  { to: '/research', label: '法律研究', icon: BookOpen },
   { to: '/search', label: '法律检索', icon: Search },
   { to: '/templates', label: '模板管理', icon: FileCode },
+  { to: '/settings', label: '系统设置', icon: Settings },
 ];
 
 export default function Layout() {

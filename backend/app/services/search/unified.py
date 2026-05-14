@@ -5,6 +5,7 @@ import re
 import logging
 import anthropic
 from app.config import get_settings
+from app.services.llm_client import create_llm_client, create_llm_client_from_settings
 from app.schemas.search import (
     UnifiedSearchResult, LawSearchResult, CaseSearchResult,
 )
@@ -19,13 +20,7 @@ def _get_client():
     global _client, _settings
     if _client is None:
         _settings = get_settings()
-        kwargs = {}
-        if _settings.CLAUDE_BASE_URL:
-            kwargs["base_url"] = _settings.CLAUDE_BASE_URL
-            kwargs["auth_token"] = _settings.CLAUDE_API_KEY
-        else:
-            kwargs["api_key"] = _settings.CLAUDE_API_KEY
-        _client = anthropic.AsyncAnthropic(**kwargs)
+        _client = create_llm_client_from_settings(_settings)
     return _client
 
 
@@ -103,18 +98,46 @@ class UnifiedSearchService:
         else:
             tasks.append(self._empty())
 
+        # 向量库搜索
+        if result_type in ("all", "law"):
+            tasks.append(self._search_statutes_vector(query, min(top_k, 5)))
+        else:
+            tasks.append(self._empty())
+
+        if result_type in ("all", "case"):
+            tasks.append(self._search_cases_vector(query, min(top_k, 5)))
+        else:
+            tasks.append(self._empty())
+
+        # 外部API搜索
+        if result_type in ("all", "law"):
+            tasks.append(self._search_external_laws(query, min(top_k, 5)))
+        else:
+            tasks.append(self._empty())
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if results and not isinstance(results[0], Exception):
-            laws = results[0]
-        if len(results) > 1 and not isinstance(results[1], Exception):
-            cases = results[1]
+        ai_laws = results[0] if results and not isinstance(results[0], Exception) else []
+        ai_cases = results[1] if len(results) > 1 and not isinstance(results[1], Exception) else []
+        vec_statutes = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else []
+        vec_cases = results[3] if len(results) > 3 and not isinstance(results[3], Exception) else []
+        ext_laws = results[4] if len(results) > 4 and not isinstance(results[4], Exception) else []
+
+        # 合并去重
+        laws = list(ai_laws) + list(vec_statutes) + list(ext_laws)
+        cases = list(ai_cases) + list(vec_cases)
 
         sources_used = []
-        if laws:
+        if ai_laws:
             sources_used.append("AI法规检索")
-        if cases:
+        if ai_cases:
             sources_used.append("AI案例检索")
+        if vec_statutes:
+            sources_used.append("本地法条库")
+        if vec_cases:
+            sources_used.append("本地案例库")
+        if ext_laws:
+            sources_used.append("外部法律数据库")
 
         return UnifiedSearchResult(
             query=query,
@@ -203,4 +226,64 @@ class UnifiedSearchService:
                     return json.loads(match.group())
                 except json.JSONDecodeError:
                     pass
+            return []
+
+    async def _search_statutes_vector(self, query: str, limit: int) -> list[LawSearchResult]:
+        try:
+            from app.services.vector.store import get_vector_service
+            svc = get_vector_service()
+            items = await svc.search_statutes(query, limit)
+            results = []
+            for it in items:
+                meta = it.get("metadata", {})
+                results.append(LawSearchResult(
+                    source="本地法条库",
+                    document_id=it.get("id", ""),
+                    title=meta.get("title", ""),
+                    provision_ref=meta.get("provision_ref", ""),
+                    content=it.get("content", "")[:500],
+                    relevance_score=1.0 - it.get("distance", 0.5),
+                ))
+            return results
+        except Exception as e:
+            logger.warning(f"Vector statute search failed: {e}")
+            return []
+
+    async def _search_cases_vector(self, query: str, limit: int) -> list[CaseSearchResult]:
+        try:
+            from app.services.vector.store import get_vector_service
+            svc = get_vector_service()
+            items = await svc.search_cases(query, limit)
+            results = []
+            for it in items:
+                meta = it.get("metadata", {})
+                results.append(CaseSearchResult(
+                    source="本地案例库",
+                    case_id=it.get("id", ""),
+                    case_number=meta.get("case_number", ""),
+                    title=meta.get("title", ""),
+                    court=meta.get("court", ""),
+                    date=meta.get("date", ""),
+                    judgment_type=meta.get("judgment_type", ""),
+                    content=it.get("content", "")[:500],
+                    relevance_score=1.0 - it.get("distance", 0.5),
+                ))
+            return results
+        except Exception as e:
+            logger.warning(f"Vector case search failed: {e}")
+            return []
+
+    async def _search_external_laws(self, query: str, limit: int) -> list[LawSearchResult]:
+        try:
+            from app.services.data_sources.base import DataSourceRegistry
+            adapters = DataSourceRegistry.get_all()
+            results = []
+            for name, adapter in adapters.items():
+                try:
+                    items = await adapter.search_law(query, limit=limit)
+                    results.extend(items)
+                except Exception:
+                    pass
+            return results[:limit]
+        except Exception:
             return []

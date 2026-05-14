@@ -75,4 +75,4 @@ class DocumentOut(BaseModel):
 
 
 class DocumentExport(BaseModel):
-    format: str = "docx"  # docx / markdown
+    format: str = "docx"  # docx / markdown / html / pdf

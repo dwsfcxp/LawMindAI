@@ -7,6 +7,9 @@ import Cases from './pages/Cases';
 import DocumentGenerate from './pages/DocumentGenerate';
 import Search from './pages/Search';
 import Templates from './pages/Templates';
+import Settings from './pages/Settings';
+import Evidence from './pages/Evidence';
+import Research from './pages/Research';
 
 function App() {
   return (
@@ -25,6 +28,9 @@ function App() {
         <Route path="documents" element={<DocumentGenerate />} />
         <Route path="search" element={<Search />} />
         <Route path="templates" element={<Templates />} />
+        <Route path="evidence" element={<Evidence />} />
+        <Route path="research" element={<Research />} />
+        <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

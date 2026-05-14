@@ -1,0 +1,232 @@
+"""证据管理路由"""
+
+import uuid
+import logging
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.config import get_settings
+from app.models.user import User
+from app.models.case import Case
+from app.models.evidence import Evidence
+from app.schemas.evidence import EvidenceCreate, EvidenceUpdate, EvidenceOut
+from app.services.evidence.ocr import validate_file_type, extract_text
+from app.services.evidence.analysis import analyze_evidence
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.get("", response_model=list[EvidenceOut])
+async def list_evidence(
+    case_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = select(Evidence).join(Case).where(Case.owner_id == current_user.id)
+    if case_id:
+        query = query.where(Evidence.case_id == case_id)
+    query = query.order_by(Evidence.sort_order, Evidence.created_at.desc())
+    result = await db.execute(query)
+    items = []
+    for e in result.scalars().all():
+        out = EvidenceOut.model_validate(e)
+        out.has_file = e.file_path is not None
+        items.append(out)
+    return items
+
+
+@router.post("", response_model=EvidenceOut)
+async def create_evidence(
+    data: EvidenceCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 验证案件归属
+    case = await db.execute(select(Case).where(Case.id == data.case_id, Case.owner_id == current_user.id))
+    if not case.scalar_one_or_none():
+        raise HTTPException(404, "案件不存在")
+    row = Evidence(
+        case_id=data.case_id,
+        type=data.type,
+        title=data.title,
+        tags=data.tags,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    out = EvidenceOut.model_validate(row)
+    out.has_file = False
+    return out
+
+
+@router.post("/{evidence_id}/upload", response_model=EvidenceOut)
+async def upload_file(
+    evidence_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+
+    if not validate_file_type(file.filename or ""):
+        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOCX, TXT, PNG, JPG, BMP, TIFF")
+
+    settings = get_settings()
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(400, f"文件大小超过{settings.MAX_UPLOAD_SIZE_MB}MB限制")
+
+    upload_dir = settings.upload_path / "evidence" / str(row.case_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename or ".bin").suffix
+    safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
+    dest = upload_dir / safe_name
+    dest.write_bytes(content)
+
+    row.file_path = f"evidence/{row.case_id}/{safe_name}"
+    await db.commit()
+    await db.refresh(row)
+
+    # 自动OCR
+    try:
+        ocr_text = await extract_text(dest)
+        row.ocr_text = ocr_text
+        await db.commit()
+        await db.refresh(row)
+    except Exception as e:
+        logger.warning(f"Auto OCR failed for evidence {evidence_id}: {e}")
+
+    out = EvidenceOut.model_validate(row)
+    out.has_file = True
+    return out
+
+
+@router.get("/{evidence_id}", response_model=EvidenceOut)
+async def get_evidence(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+    out = EvidenceOut.model_validate(row)
+    out.has_file = row.file_path is not None
+    return out
+
+
+@router.put("/{evidence_id}", response_model=EvidenceOut)
+async def update_evidence(
+    evidence_id: int,
+    data: EvidenceUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    await db.commit()
+    await db.refresh(row)
+    out = EvidenceOut.model_validate(row)
+    out.has_file = row.file_path is not None
+    return out
+
+
+@router.delete("/{evidence_id}")
+async def delete_evidence(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+    if row.file_path:
+        settings = get_settings()
+        fp = settings.upload_path / row.file_path
+        if fp.exists():
+            fp.unlink()
+    await db.delete(row)
+    await db.commit()
+    return {"message": "已删除"}
+
+
+@router.post("/{evidence_id}/analyze", response_model=EvidenceOut)
+async def analyze_evidence_endpoint(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+
+    # 如果有文件但还没OCR，先提取文字
+    if row.file_path and not row.ocr_text:
+        settings = get_settings()
+        fp = settings.upload_path / row.file_path
+        if fp.exists():
+            row.ocr_text = await extract_text(fp)
+            await db.commit()
+            await db.refresh(row)
+
+    # 获取案件背景
+    case_result = await db.execute(select(Case).where(Case.id == row.case_id))
+    case = case_result.scalar_one_or_none()
+    case_context = case.description if case else ""
+
+    row.analysis = await analyze_evidence(row.ocr_text or "", case_context)
+    await db.commit()
+    await db.refresh(row)
+
+    out = EvidenceOut.model_validate(row)
+    out.has_file = row.file_path is not None
+    return out
+
+
+@router.get("/{evidence_id}/download")
+async def download_evidence(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from fastapi.responses import FileResponse
+
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row or not row.file_path:
+        raise HTTPException(404, "文件不存在")
+
+    settings = get_settings()
+    fp = settings.upload_path / row.file_path
+    if not fp.exists():
+        raise HTTPException(404, "文件已被删除")
+
+    return FileResponse(str(fp), filename=fp.name, media_type="application/octet-stream")

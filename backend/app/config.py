@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     QICHACHA_API_KEY: str = ""
     QICHACHA_API_URL: str = "https://api.qichacha.com"
 
+    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    EMBEDDING_BASE_URL: str = ""
+
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
 

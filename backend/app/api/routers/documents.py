@@ -143,6 +143,25 @@ async def export_document(
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             filename=Path(filepath).name,
         )
+    elif data.format == "html":
+        from app.services.docgen.html_export import export_to_html
+        filepath = await export_to_html(doc, output_dir)
+        return FileResponse(
+            filepath,
+            media_type="text/html",
+            filename=Path(filepath).name,
+        )
+    elif data.format == "pdf":
+        try:
+            from app.services.docgen.pdf_export import export_to_pdf
+            filepath = await export_to_pdf(doc, output_dir)
+            return FileResponse(
+                filepath,
+                media_type="application/pdf",
+                filename=Path(filepath).name,
+            )
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
     elif data.format == "markdown":
         filepath = output_dir / f"{doc.id}_{doc.title}.md"
         filepath.write_text(doc.content, encoding="utf-8")
@@ -175,3 +194,19 @@ async def review_document(
     await db.flush()
     await db.refresh(doc)
     return doc
+
+
+@router.post("/{doc_id}/verify-laws")
+async def verify_document_laws(
+    doc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """法条核查 — 多源交叉验证文书中引用的法条准确性"""
+    doc = await db.get(Document, doc_id)
+    if not doc or doc.owner_id != current_user.id:
+        raise HTTPException(404, "文书不存在")
+
+    engine = get_engine()
+    results = await engine.verify_laws_in_content(doc.content)
+    return {"document_id": doc_id, "verification_results": results, "total": len(results)}
