@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Settings as SettingsIcon, Plus, Trash2, CheckCircle, XCircle, Loader2, Zap, Globe, Building2, Lock, Database, Link2, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Server, AlertCircle, Download, Upload, Save, RotateCcw } from 'lucide-react';
+import { Settings as SettingsIcon, Plus, Trash2, CheckCircle, XCircle, Loader2, Zap, Globe, Building2, Lock, Database, Link2, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Server, AlertCircle, Download, Upload, Save, RotateCcw, Activity, RefreshCw, TestTube, BarChart3, ShieldCheck, Clock } from 'lucide-react';
 import { llmSettingsApi, externalApiConfigApi, appConfigApi, apiClient, type LLMSetting, type ExternalApiConfig, type ExternalApiPreset, type AppConfigItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
@@ -13,7 +13,6 @@ interface Preset {
   locked: boolean;
 }
 
-// -- 外部API表单状态 ---------------------------------------------
 const emptyApiForm = {
   name: '', description: '', base_url: '', auth_type: 'none',
   auth_token: '', auth_header_name: 'Authorization',
@@ -24,6 +23,108 @@ const emptyApiForm = {
   health_check_path: '', response_mapping: '{}', request_template: '{}',
   is_enabled: true, category: 'custom',
 };
+
+/** Connection status indicator with visual feedback */
+function StatusIndicator({ status }: { status: 'connected' | 'disconnected' | 'checking' | 'unknown' }) {
+  switch (status) {
+    case 'connected':
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" />
+          <span className="text-xs text-green-600 font-medium">已连接</span>
+        </div>
+      );
+    case 'disconnected':
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+          <span className="text-xs text-red-600 font-medium">未连接</span>
+        </div>
+      );
+    case 'checking':
+      return (
+        <div className="flex items-center gap-1.5">
+          <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+          <span className="text-xs text-blue-600">检测中</span>
+        </div>
+      );
+    default:
+      return <span className="text-xs text-muted-foreground">未检测</span>;
+  }
+}
+
+/** Visual status dashboard for all services */
+function StatusDashboard({ llmConfigs, apiConfigs, connectionStatuses, vectorStatus, onTestAll, testing }: {
+  llmConfigs: LLMSetting[];
+  apiConfigs: ExternalApiConfig[];
+  connectionStatuses: Record<string, 'connected' | 'disconnected' | 'checking'>;
+  vectorStatus: 'connected' | 'disconnected' | 'unknown';
+  onTestAll: () => void;
+  testing: boolean;
+}) {
+  const totalServices = llmConfigs.length + apiConfigs.filter(a => a.is_enabled).length + 1; // +1 for vector DB
+  const connectedCount = Object.values(connectionStatuses).filter(s => s === 'connected').length + (vectorStatus === 'connected' ? 1 : 0);
+  const healthPercent = totalServices > 0 ? Math.round((connectedCount / totalServices) * 100) : 0;
+
+  let healthColor = 'text-green-600';
+  let healthBg = 'bg-green-50 border-green-200';
+  if (healthPercent < 50) { healthColor = 'text-red-600'; healthBg = 'bg-red-50 border-red-200'; }
+  else if (healthPercent < 80) { healthColor = 'text-amber-600'; healthBg = 'bg-amber-50 border-amber-200'; }
+
+  return (
+    <div className={`rounded-lg border p-4 ${healthBg}`}>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-4">
+          {/* Health circle */}
+          <div className="relative h-14 w-14">
+            <svg className="h-14 w-14 -rotate-90" viewBox="0 0 56 56">
+              <circle cx="28" cy="28" r="24" fill="none" stroke="hsl(var(--muted))" strokeWidth="4" />
+              <circle cx="28" cy="28" r="24" fill="none" stroke="currentColor" strokeWidth="4"
+                strokeDasharray={`${(healthPercent / 100) * 150.8} 150.8`} strokeLinecap="round"
+                className={healthPercent >= 80 ? 'text-green-500' : healthPercent >= 50 ? 'text-amber-500' : 'text-red-500'} />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className={`text-sm font-bold ${healthColor}`}>{healthPercent}%</span>
+            </div>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold">系统健康状态</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {connectedCount}/{totalServices} 服务正常运行
+            </p>
+          </div>
+        </div>
+        <button onClick={onTestAll} disabled={testing}
+          className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50">
+          {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <TestTube className="h-3 w-3" />}
+          测试全部连接
+        </button>
+      </div>
+      {/* Service list */}
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {/* LLM services */}
+        {llmConfigs.map(c => (
+          <div key={`llm_${c.id}`} className="flex items-center justify-between rounded-md bg-white/60 px-3 py-1.5">
+            <span className="text-xs font-medium truncate">{c.name}</span>
+            <StatusIndicator status={connectionStatuses[`llm_${c.id}`] || 'unknown'} />
+          </div>
+        ))}
+        {/* API services */}
+        {apiConfigs.filter(a => a.is_enabled).map(c => (
+          <div key={`api_${c.id}`} className="flex items-center justify-between rounded-md bg-white/60 px-3 py-1.5">
+            <span className="text-xs font-medium truncate">{c.name}</span>
+            <StatusIndicator status={connectionStatuses[`api_${c.id}`] || 'unknown'} />
+          </div>
+        ))}
+        {/* Vector DB */}
+        <div className="flex items-center justify-between rounded-md bg-white/60 px-3 py-1.5">
+          <span className="text-xs font-medium">向量数据库</span>
+          <StatusIndicator status={vectorStatus === 'unknown' ? 'unknown' : vectorStatus} />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Settings() {
   const { toast } = useToast();
@@ -57,6 +158,8 @@ export default function Settings() {
   // 向量DB配置
   const [vectorConfigs, setVectorConfigs] = useState<AppConfigItem[]>([]);
   const [vectorLoading, setVectorLoading] = useState(true);
+  const [vectorTestStatus, setVectorTestStatus] = useState<'connected' | 'disconnected' | 'unknown'>('unknown');
+  const [testingVector, setTestingVector] = useState(false);
 
   // 页面级错误
   const [pageError, setPageError] = useState('');
@@ -65,18 +168,24 @@ export default function Settings() {
   // 当前激活的Tab
   const [activeTab, setActiveTab] = useState<'llm' | 'external' | 'vector' | 'general'>('llm');
 
-  // -- Iteration 39: General config state --
+  // General config state
   const [generalConfig, setGeneralConfig] = useState({
     max_upload_size: '50',
     default_temperature: '0.7',
     default_document_format: 'docx',
   });
   const [connectionStatuses, setConnectionStatuses] = useState<Record<string, 'connected' | 'disconnected' | 'checking'>>({});
+  const [testingAll, setTestingAll] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { loadConfigs(); loadPresets(); loadApiConfigs(); loadApiPresets(); loadVectorConfigs(); }, []);
+  // API usage stats (simulated from localStorage)
+  const [apiUsageStats, setApiUsageStats] = useState<Record<string, { calls: number; lastUsed: string | null }>>({});
 
-  // Escape key closes any open modal
+  // Form validation state
+  const [formValidation, setFormValidation] = useState<Record<string, string>>({});
+
+  useEffect(() => { loadConfigs(); loadPresets(); loadApiConfigs(); loadApiPresets(); loadVectorConfigs(); loadApiUsageStats(); }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -88,7 +197,25 @@ export default function Settings() {
     return () => document.removeEventListener('keydown', handler);
   }, [showModal, showApiModal]);
 
-  // -- LLM配置逻辑 ------------------------------------------------
+  // Load API usage stats from localStorage
+  const loadApiUsageStats = () => {
+    try {
+      const saved = localStorage.getItem('lawmind_api_usage');
+      if (saved) setApiUsageStats(JSON.parse(saved));
+    } catch {}
+  };
+
+  // Save API usage stat
+  const trackApiCall = (serviceName: string) => {
+    const updated = { ...apiUsageStats };
+    if (!updated[serviceName]) updated[serviceName] = { calls: 0, lastUsed: null };
+    updated[serviceName].calls += 1;
+    updated[serviceName].lastUsed = new Date().toISOString();
+    setApiUsageStats(updated);
+    try { localStorage.setItem('lawmind_api_usage', JSON.stringify(updated)); } catch {}
+  };
+
+  // LLM配置逻辑
   const loadConfigs = async () => {
     try { setLoading(true); const data = await llmSettingsApi.list(); setConfigs(data); }
     catch { setPageError('加载LLM配置失败'); }
@@ -100,11 +227,20 @@ export default function Settings() {
     catch { /* presets load failed */ }
   };
 
+  /** Validate LLM form before save */
+  const validateLlmForm = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!form.name.trim()) errors.name = '配置名称不能为空';
+    if (!form.model_name.trim()) errors.model_name = '模型名称不能为空';
+    if (!editingId && !form.api_key.trim()) errors.api_key = 'API Key 不能为空';
+    if (form.base_url && !/^https?:\/\//.test(form.base_url.trim())) errors.base_url = 'Base URL 必须以 http:// 或 https:// 开头';
+    if (form.max_tokens < 1 || form.max_tokens > 128000) errors.max_tokens = 'Max Tokens 应在 1-128000 之间';
+    setFormValidation(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const handleSave = async () => {
-    if (form.base_url && !/^https?:\/\//.test(form.base_url.trim())) {
-      setLlmFormError('Base URL 必须以 http:// 或 https:// 开头');
-      return;
-    }
+    if (!validateLlmForm()) return;
     setLlmFormError('');
     try {
       if (editingId) {
@@ -114,18 +250,18 @@ export default function Settings() {
         toast({ type: 'success', title: '配置已更新' });
       }
       else { await llmSettingsApi.create(form); toast({ type: 'success', title: '配置已创建' }); }
-      setShowModal(false); setEditingId(null); resetForm(); loadConfigs();
+      setShowModal(false); setEditingId(null); resetForm(); setFormValidation({}); loadConfigs();
     } catch { toast({ type: 'error', title: '保存失败', description: '请检查输入' }); }
   };
 
   const handleQuickAdd = (preset: Preset) => {
     setForm({ name: preset.name, base_url: preset.base_url, api_key: '', model_name: preset.model_name, max_tokens: preset.max_tokens, is_default: false });
-    setEditingId(null); setShowModal(true);
+    setEditingId(null); setShowModal(true); setFormValidation({});
   };
 
   const handleEdit = (c: LLMSetting) => {
     setForm({ name: c.name, base_url: c.base_url, api_key: '', model_name: c.model_name, max_tokens: c.max_tokens, is_default: c.is_default });
-    setEditingId(c.id); setShowModal(true);
+    setEditingId(c.id); setShowModal(true); setFormValidation({});
   };
 
   const handleDelete = async (id: number) => {
@@ -136,9 +272,11 @@ export default function Settings() {
 
   const handleTest = async (c: LLMSetting) => {
     setTesting(c.id); setTestResult(null);
+    trackApiCall(c.name);
     try {
       const result = await llmSettingsApi.testConnectivity({ base_url: c.base_url, api_key: '', model_name: c.model_name, setting_id: c.id });
       setTestResult({ id: c.id, success: result.success, message: result.message });
+      setConnectionStatuses(prev => ({ ...prev, [`llm_${c.id}`]: result.success ? 'connected' : 'disconnected' }));
       if (result.success) toast({ type: 'success', title: '连接测试成功', description: result.message });
       else toast({ type: 'warning', title: '连接测试失败', description: result.message });
     } catch (e: any) { setTestResult({ id: c.id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
@@ -156,7 +294,7 @@ export default function Settings() {
 
   const resetForm = () => setForm({ name: '', base_url: '', api_key: '', model_name: '', max_tokens: 4096, is_default: false });
 
-  // -- 外部API配置逻辑 ------------------------------------------------
+  // 外部API配置逻辑
   const loadApiConfigs = async () => {
     try { setApiLoading(true); const data = await externalApiConfigApi.list(); setApiConfigs(data); }
     catch { setPageError('加载外部API配置失败'); }
@@ -226,9 +364,12 @@ export default function Settings() {
 
   const handleApiTest = async (id: number) => {
     setTestingApi(id); setApiTestResult(null);
+    const config = apiConfigs.find(c => c.id === id);
+    if (config) trackApiCall(config.name);
     try {
       const result = await externalApiConfigApi.test(id);
       setApiTestResult({ id, success: result.success, message: result.message });
+      setConnectionStatuses(prev => ({ ...prev, [`api_${id}`]: result.success ? 'connected' : 'disconnected' }));
       if (result.success) toast({ type: 'success', title: '接口测试成功', description: `延迟 ${result.latency_ms}ms` });
       else toast({ type: 'warning', title: '接口测试失败', description: result.message });
     } catch (e: any) { setApiTestResult({ id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
@@ -249,7 +390,7 @@ export default function Settings() {
     setEditingApiId(null); setApiFormError(''); setShowApiModal(true);
   };
 
-  // -- 向量DB配置逻辑 ------------------------------------------------
+  // 向量DB配置逻辑
   const loadVectorConfigs = async () => {
     try { setVectorLoading(true); const data = await appConfigApi.list('vector_db'); setVectorConfigs(data); }
     catch { setPageError('加载向量配置失败'); }
@@ -262,17 +403,100 @@ export default function Settings() {
   };
 
   const handleVectorReset = async () => {
-    try { await appConfigApi.resetVectorConnection(); toast({ type: 'success', title: '向量数据库连接已重置' }); }
+    try { await appConfigApi.resetVectorConnection(); toast({ type: 'success', title: '向量数据库连接已重置' }); setVectorTestStatus('unknown'); }
     catch { toast({ type: 'error', title: '重置失败' }); }
   };
 
-  // -- Iteration 39: General config handlers --
+  /** Test vector DB connection */
+  const handleTestVectorConnection = async () => {
+    setTestingVector(true);
+    try {
+      const res = await apiClient.get('/vector/stats', { timeout: 15000 });
+      const data = res.data;
+      setVectorTestStatus(data.connected ? 'connected' : 'disconnected');
+      if (data.connected) {
+        toast({ type: 'success', title: '向量数据库连接成功', description: `Cases: ${data.cases_count}, Statutes: ${data.statutes_count}` });
+      } else {
+        toast({ type: 'warning', title: '向量数据库未连接' });
+      }
+    } catch {
+      setVectorTestStatus('disconnected');
+      toast({ type: 'error', title: '向量数据库连接失败' });
+    } finally { setTestingVector(false); }
+  };
+
+  /** Test all connections at once */
+  const handleTestAllConnections = async () => {
+    setTestingAll(true);
+    const statuses: Record<string, 'connected' | 'disconnected' | 'checking'> = {};
+
+    // Mark all as checking
+    for (const c of configs) statuses[`llm_${c.id}`] = 'checking';
+    for (const c of apiConfigs) if (c.is_enabled) statuses[`api_${c.id}`] = 'checking';
+    setConnectionStatuses({ ...statuses });
+
+    // Test LLM configs
+    for (const c of configs) {
+      try {
+        const result = await llmSettingsApi.testConnectivity({ base_url: c.base_url, api_key: '', model_name: c.model_name, setting_id: c.id });
+        statuses[`llm_${c.id}`] = result.success ? 'connected' : 'disconnected';
+      } catch { statuses[`llm_${c.id}`] = 'disconnected'; }
+      setConnectionStatuses({ ...statuses });
+    }
+
+    // Test API configs
+    for (const c of apiConfigs) {
+      if (c.is_enabled) {
+        try {
+          const result = await externalApiConfigApi.test(c.id);
+          statuses[`api_${c.id}`] = result.success ? 'connected' : 'disconnected';
+        } catch { statuses[`api_${c.id}`] = 'disconnected'; }
+      } else {
+        statuses[`api_${c.id}`] = 'disconnected';
+      }
+      setConnectionStatuses({ ...statuses });
+    }
+
+    // Test vector DB
+    try {
+      const res = await apiClient.get('/vector/stats', { timeout: 15000 });
+      setVectorTestStatus(res.data.connected ? 'connected' : 'disconnected');
+    } catch { setVectorTestStatus('disconnected'); }
+
+    setTestingAll(false);
+    toast({ type: 'info', title: '全部连接检测完成' });
+  };
+
+  // General config handlers
   const handleGeneralSave = () => {
+    // Validation
+    const maxSize = parseInt(generalConfig.max_upload_size);
+    const temp = parseFloat(generalConfig.default_temperature);
+    if (isNaN(maxSize) || maxSize < 1 || maxSize > 500) {
+      toast({ type: 'error', title: '保存失败', description: '最大上传大小应在 1-500 MB 之间' });
+      return;
+    }
+    if (isNaN(temp) || temp < 0 || temp > 2) {
+      toast({ type: 'error', title: '保存失败', description: 'Temperature 应在 0-2 之间' });
+      return;
+    }
     try {
       const configStr = JSON.stringify(generalConfig, null, 2);
       localStorage.setItem('lawmind_general_config', configStr);
       toast({ type: 'success', title: '通用配置已保存' });
     } catch { toast({ type: 'error', title: '保存失败' }); }
+  };
+
+  /** Reset all general config to defaults */
+  const handleResetDefaults = () => {
+    if (!confirm('确定恢复默认配置？这将重置所有通用设置为默认值。')) return;
+    setGeneralConfig({
+      max_upload_size: '50',
+      default_temperature: '0.7',
+      default_document_format: 'docx',
+    });
+    localStorage.removeItem('lawmind_general_config');
+    toast({ type: 'success', title: '已恢复默认配置' });
   };
 
   const handleExportConfig = () => {
@@ -307,28 +531,6 @@ export default function Settings() {
     e.target.value = '';
   };
 
-  const checkAllConnections = async () => {
-    const statuses: Record<string, 'connected' | 'disconnected' | 'checking'> = {};
-    for (const config of apiConfigs) {
-      statuses[`api_${config.id}`] = 'checking';
-    }
-    setConnectionStatuses({ ...statuses });
-    for (const config of apiConfigs) {
-      if (config.is_enabled) {
-        try {
-          const result = await externalApiConfigApi.test(config.id);
-          statuses[`api_${config.id}`] = result.success ? 'connected' : 'disconnected';
-        } catch {
-          statuses[`api_${config.id}`] = 'disconnected';
-        }
-      } else {
-        statuses[`api_${config.id}`] = 'disconnected';
-      }
-      setConnectionStatuses({ ...statuses });
-    }
-    toast({ type: 'info', title: '连接检测完成' });
-  };
-
   // Load general config from localStorage on mount
   useEffect(() => {
     try {
@@ -337,7 +539,7 @@ export default function Settings() {
     } catch {}
   }, []);
 
-  // -- 渲染辅助 ------------------------------------------------
+  // Render helpers
   const domesticPresets = presets.filter(p => p.category === '国内');
   const internationalPresets = presets.filter(p => p.category === '国际');
   const configuredKeys = new Set(configs.map(c => c.name));
@@ -447,6 +649,19 @@ export default function Settings() {
                     </div>
                   </div>
                   <div className="text-xs text-muted-foreground">API Key: {c.api_key_masked} &middot; Max Tokens: {c.max_tokens}</div>
+                  {/* API usage stats */}
+                  {apiUsageStats[c.name] && (
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <BarChart3 className="h-3 w-3" />
+                      <span>调用次数: {apiUsageStats[c.name].calls}</span>
+                      {apiUsageStats[c.name].lastUsed && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          最近调用: {new Date(apiUsageStats[c.name].lastUsed!).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {testResult && testResult.id === c.id && (
                     <div className={`flex items-center gap-2 rounded-md p-2 text-sm ${testResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                       {testResult.success ? <CheckCircle className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {testResult.message}
@@ -479,14 +694,14 @@ export default function Settings() {
           </div>
         )}
 
-        <button onClick={() => { resetForm(); setEditingId(null); setLlmFormError(''); setShowModal(true); }}
+        <button onClick={() => { resetForm(); setEditingId(null); setLlmFormError(''); setFormValidation({}); setShowModal(true); }}
           className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground w-full justify-center">
           <Plus className="h-4 w-4" /> 自定义添加其他模型
         </button>
 
-        {/* LLM Modal - responsive */}
+        {/* LLM Modal */}
         {showModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setShowModal(false); setEditingId(null); resetForm(); setLlmFormError(''); }} role="dialog" aria-modal="true" aria-label="LLM配置">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setShowModal(false); setEditingId(null); resetForm(); setLlmFormError(''); setFormValidation({}); }} role="dialog" aria-modal="true" aria-label="LLM配置">
             <div className="w-full max-w-lg rounded-lg bg-background p-4 sm:p-6 shadow-xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <h2 className="text-lg font-semibold mb-4">{editingId ? '编辑配置' : '添加配置'}</h2>
               {llmFormError && (
@@ -496,15 +711,40 @@ export default function Settings() {
                 </div>
               )}
               <div className="space-y-4">
-                <div><label className="text-sm font-medium">配置名称</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如：智谱GLM-4" /></div>
-                <div><label className="text-sm font-medium">Base URL</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://open.bigmodel.cn/api/anthropic" /></div>
-                <div><label className="text-sm font-medium">API Key</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editingId ? '留空则不修改' : '输入API Key'} /></div>
-                <div><label className="text-sm font-medium">模型名称</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={form.model_name} onChange={(e) => setForm({ ...form, model_name: e.target.value })} placeholder="glm-5.1" /></div>
-                <div><label className="text-sm font-medium">Max Tokens</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" type="number" value={form.max_tokens} onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} onKeyDown={(e) => e.key === 'Enter' && handleSave()} /></div>
+                <div>
+                  <label className="text-sm font-medium">配置名称</label>
+                  <input className={`mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm ${formValidation.name ? 'border-red-300' : ''}`}
+                    value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如：智谱GLM-4" />
+                  {formValidation.name && <p className="text-xs text-red-600 mt-1">{formValidation.name}</p>}
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Base URL</label>
+                  <input className={`mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm ${formValidation.base_url ? 'border-red-300' : ''}`}
+                    value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder="https://open.bigmodel.cn/api/anthropic" />
+                  {formValidation.base_url && <p className="text-xs text-red-600 mt-1">{formValidation.base_url}</p>}
+                </div>
+                <div>
+                  <label className="text-sm font-medium">API Key</label>
+                  <input className={`mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm ${formValidation.api_key ? 'border-red-300' : ''}`}
+                    type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={editingId ? '留空则不修改' : '输入API Key'} />
+                  {formValidation.api_key && <p className="text-xs text-red-600 mt-1">{formValidation.api_key}</p>}
+                </div>
+                <div>
+                  <label className="text-sm font-medium">模型名称</label>
+                  <input className={`mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm ${formValidation.model_name ? 'border-red-300' : ''}`}
+                    value={form.model_name} onChange={(e) => setForm({ ...form, model_name: e.target.value })} placeholder="glm-5.1" />
+                  {formValidation.model_name && <p className="text-xs text-red-600 mt-1">{formValidation.model_name}</p>}
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Max Tokens</label>
+                  <input className={`mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm ${formValidation.max_tokens ? 'border-red-300' : ''}`}
+                    type="number" value={form.max_tokens} onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} onKeyDown={(e) => e.key === 'Enter' && handleSave()} />
+                  {formValidation.max_tokens && <p className="text-xs text-red-600 mt-1">{formValidation.max_tokens}</p>}
+                </div>
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />设为默认配置</label>
               </div>
               <div className="mt-6 flex justify-end gap-3">
-                <button onClick={() => { setShowModal(false); setEditingId(null); resetForm(); setLlmFormError(''); }} className="rounded-md border px-4 py-2 text-sm hover:bg-accent">取消</button>
+                <button onClick={() => { setShowModal(false); setEditingId(null); resetForm(); setLlmFormError(''); setFormValidation({}); }} className="rounded-md border px-4 py-2 text-sm hover:bg-accent">取消</button>
                 <button onClick={handleSave} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">保存</button>
               </div>
             </div>
@@ -521,7 +761,7 @@ export default function Settings() {
           {apiLoading ? (
             <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
           ) : apiConfigs.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-4">暂无外部接口配置，点击下方预设模板快速添加，或自定义添加。</p>
+            <p className="text-sm text-muted-foreground py-4">暂无外部接口配置。</p>
           ) : (
             <div className="space-y-3">
               {apiConfigs.map((c) => (
@@ -551,10 +791,17 @@ export default function Settings() {
                     </div>
                   </div>
                   <p className="text-sm text-muted-foreground break-all">{c.description || c.base_url}</p>
-                  <div className="text-xs text-muted-foreground">
-                    认证: {AUTH_TYPE_LABELS[c.auth_type] || c.auth_type}
-                    {c.search_law_path && <span className="ml-2">| 法规端点: {c.search_law_path}</span>}
-                    {c.search_case_path && <span className="ml-2">| 案例端点: {c.search_case_path}</span>}
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                    <span>认证: {AUTH_TYPE_LABELS[c.auth_type] || c.auth_type}</span>
+                    {c.search_law_path && <span>法规端点: {c.search_law_path}</span>}
+                    {c.search_case_path && <span>案例端点: {c.search_case_path}</span>}
+                    {/* Usage stats */}
+                    {apiUsageStats[c.name] && (
+                      <span className="flex items-center gap-1">
+                        <BarChart3 className="h-3 w-3" />
+                        调用 {apiUsageStats[c.name].calls} 次
+                      </span>
+                    )}
                   </div>
                   {apiTestResult && apiTestResult.id === c.id && (
                     <div className={`flex items-center gap-2 rounded-md p-2 text-sm ${apiTestResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
@@ -575,15 +822,11 @@ export default function Settings() {
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             {apiPresets.map((preset) => (
               <div key={preset.key} className="rounded-lg border bg-card p-3 space-y-2 hover:shadow-sm transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm">{preset.name}</span>
-                      <span className={`rounded-full px-1.5 py-0.5 text-xs ${CATEGORY_COLORS[preset.category] || ''}`}>{preset.category}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">{preset.description}</p>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm">{preset.name}</span>
+                  <span className={`rounded-full px-1.5 py-0.5 text-xs ${CATEGORY_COLORS[preset.category] || ''}`}>{preset.category}</span>
                 </div>
+                <p className="text-xs text-muted-foreground">{preset.description}</p>
                 <button onClick={() => handleApiPresetAdd(preset)}
                   className="w-full rounded-md bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary hover:bg-primary/20">
                   <Plus className="h-3 w-3 inline mr-1" />添加配置
@@ -598,7 +841,7 @@ export default function Settings() {
           <Plus className="h-4 w-4" /> 自定义添加任意REST API接口
         </button>
 
-        {/* 外部API编辑弹窗 - responsive */}
+        {/* 外部API编辑弹窗 */}
         {showApiModal && (
           <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/50 p-2 sm:p-4 overflow-y-auto" onClick={() => { setShowApiModal(false); setEditingApiId(null); setApiForm({ ...emptyApiForm }); setShowApiAdvanced(false); setApiFormError(''); }} role="dialog" aria-modal="true" aria-label="外部接口配置">
             <div className="w-full max-w-2xl rounded-lg bg-background p-4 sm:p-6 shadow-xl max-h-[95vh] overflow-y-auto my-2 sm:my-0" onClick={(e) => e.stopPropagation()}>
@@ -610,7 +853,6 @@ export default function Settings() {
                 </div>
               )}
               <div className="space-y-4">
-                {/* 基本信息 */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div><label className="text-sm font-medium">接口名称 *</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={apiForm.name} onChange={(e) => setApiForm({ ...apiForm, name: e.target.value })} placeholder="如：元典法律检索" /></div>
                   <div><label className="text-sm font-medium">分类</label>
@@ -625,18 +867,12 @@ export default function Settings() {
                 <div><label className="text-sm font-medium">描述</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={apiForm.description} onChange={(e) => setApiForm({ ...apiForm, description: e.target.value })} placeholder="接口用途说明" /></div>
                 <div><label className="text-sm font-medium">Base URL *</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={apiForm.base_url} onChange={(e) => setApiForm({ ...apiForm, base_url: e.target.value })} placeholder="https://api.example.com" /></div>
 
-                {/* 认证配置 */}
                 <div className="border rounded-lg p-4 space-y-3">
-                  <h3 className="text-sm font-semibold flex items-center gap-2">
-                    <Lock className="h-4 w-4" /> 认证配置
-                  </h3>
+                  <h3 className="text-sm font-semibold flex items-center gap-2"><Lock className="h-4 w-4" /> 认证配置</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div><label className="text-xs font-medium">认证方式</label>
                       <select className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={apiForm.auth_type} onChange={(e) => setApiForm({ ...apiForm, auth_type: e.target.value })}>
-                        <option value="none">无认证</option>
-                        <option value="bearer">Bearer Token</option>
-                        <option value="api_key">API Key (Header)</option>
-                        <option value="basic">Basic Auth</option>
+                        <option value="none">无认证</option><option value="bearer">Bearer Token</option><option value="api_key">API Key (Header)</option><option value="basic">Basic Auth</option>
                       </select>
                     </div>
                     <div>
@@ -653,7 +889,6 @@ export default function Settings() {
                   </div>
                 </div>
 
-                {/* 端点配置 */}
                 <div className="border rounded-lg p-4 space-y-3">
                   <h3 className="text-sm font-semibold">端点配置</h3>
                   {[
@@ -671,8 +906,7 @@ export default function Settings() {
                         <label className="text-xs font-medium">方法</label>
                         <select className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={(apiForm as any)[ep.methodKey]}
                           onChange={(e) => setApiForm({ ...apiForm, [ep.methodKey]: e.target.value })}>
-                          <option value="GET">GET</option>
-                          <option value="POST">POST</option>
+                          <option value="GET">GET</option><option value="POST">POST</option>
                         </select>
                       </div>
                     </div>
@@ -680,7 +914,6 @@ export default function Settings() {
                   <div><label className="text-xs font-medium">健康检查路径</label><input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={apiForm.health_check_path} onChange={(e) => setApiForm({ ...apiForm, health_check_path: e.target.value })} placeholder="/health" /></div>
                 </div>
 
-                {/* 高级配置 */}
                 <div className="border rounded-lg p-4 space-y-3">
                   <button className="flex items-center gap-2 text-sm font-semibold w-full" onClick={() => setShowApiAdvanced(!showApiAdvanced)}>
                     {showApiAdvanced ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} 高级配置
@@ -688,7 +921,7 @@ export default function Settings() {
                   {showApiAdvanced && (<>
                     <div><label className="text-xs font-medium">自定义请求头 (JSON)</label><textarea className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono" rows={3} value={apiForm.custom_headers} onChange={(e) => setApiForm({ ...apiForm, custom_headers: e.target.value })} placeholder='{"X-Custom-Header": "value"}' /></div>
                     <div><label className="text-xs font-medium">请求参数模板 (JSON)</label><textarea className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono" rows={3} value={apiForm.request_template} onChange={(e) => setApiForm({ ...apiForm, request_template: e.target.value })} placeholder='{"search_depth": "basic"}' /></div>
-                    <div><label className="text-xs font-medium">响应字段映射 (JSON)</label><textarea className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono" rows={5} value={apiForm.response_mapping} onChange={(e) => setApiForm({ ...apiForm, response_mapping: e.target.value })} placeholder={'{"law": {"id": "id", "title": "title", "content": "content"}, "case": {"id": "id", "title": "title", "content": "summary"}'} /></div>
+                    <div><label className="text-xs font-medium">响应字段映射 (JSON)</label><textarea className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono" rows={5} value={apiForm.response_mapping} onChange={(e) => setApiForm({ ...apiForm, response_mapping: e.target.value })} placeholder='{"law": {"id": "id", "title": "title", "content": "content"}}' /></div>
                   </>)}
                 </div>
 
@@ -706,9 +939,27 @@ export default function Settings() {
       {/* ===== 向量数据库配置 ===== */}
       {activeTab === 'vector' && (<>
         <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
-            <Database className="h-4 w-4" /> 向量数据库连接配置
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
+              <Database className="h-4 w-4" /> 向量数据库连接配置
+            </h2>
+            <button onClick={handleTestVectorConnection} disabled={testingVector}
+              className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50">
+              {testingVector ? <Loader2 className="h-3 w-3 animate-spin" /> : <TestTube className="h-3 w-3" />}
+              测试连接
+            </button>
+          </div>
+
+          {/* Vector connection status */}
+          {vectorTestStatus !== 'unknown' && (
+            <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+              vectorTestStatus === 'connected' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+            }`}>
+              {vectorTestStatus === 'connected' ? <ShieldCheck className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+              {vectorTestStatus === 'connected' ? '向量数据库连接正常' : '向量数据库连接失败，请检查配置'}
+            </div>
+          )}
+
           {vectorLoading ? (
             <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
           ) : (
@@ -720,52 +971,38 @@ export default function Settings() {
           )}
         </div>
 
-        <button onClick={handleVectorReset}
-          className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm hover:bg-accent">
-          <Database className="h-4 w-4" /> 重置向量数据库连接
-        </button>
+        <div className="flex gap-3">
+          <button onClick={handleVectorReset}
+            className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm hover:bg-accent">
+            <Database className="h-4 w-4" /> 重置向量数据库连接
+          </button>
+        </div>
       </>)}
 
-      {/* ===== Iteration 39: 通用配置 ===== */}
+      {/* ===== 通用配置 ===== */}
       {activeTab === 'general' && (<>
         <div className="space-y-6">
-          {/* Connection Status */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
-                <Link2 className="h-4 w-4" /> 外部接口连接状态
-              </h2>
-              <button onClick={checkAllConnections} className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent">
-                检测全部
-              </button>
-            </div>
-            {apiConfigs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无已配置的外部接口</p>
-            ) : (
-              <div className="space-y-2">
-                {apiConfigs.map(c => {
-                  const status = connectionStatuses[`api_${c.id}`];
-                  return (
-                    <div key={c.id} className="flex items-center justify-between rounded-lg border p-3">
-                      <span className="text-sm font-medium">{c.name}</span>
-                      <div className="flex items-center gap-2">
-                        {status === 'checking' && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />}
-                        {status === 'connected' && <><span className="h-2 w-2 rounded-full bg-green-500" /><span className="text-xs text-green-600">已连接</span></>}
-                        {status === 'disconnected' && <><span className="h-2 w-2 rounded-full bg-red-500" /><span className="text-xs text-red-600">未连接</span></>}
-                        {!status && <span className="text-xs text-muted-foreground">未检测</span>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {/* Status Dashboard */}
+          <StatusDashboard
+            llmConfigs={configs}
+            apiConfigs={apiConfigs}
+            connectionStatuses={connectionStatuses}
+            vectorStatus={vectorTestStatus}
+            onTestAll={handleTestAllConnections}
+            testing={testingAll}
+          />
 
           {/* General Settings */}
           <div className="space-y-4 rounded-xl border bg-card p-6">
-            <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
-              <SettingsIcon className="h-4 w-4" /> 通用设置
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
+                <SettingsIcon className="h-4 w-4" /> 通用设置
+              </h2>
+              <button onClick={handleResetDefaults}
+                className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+                <RotateCcw className="h-3 w-3" /> 恢复默认
+              </button>
+            </div>
             <div className="space-y-4">
               <div>
                 <label className="text-sm font-medium">最大上传大小 (MB)</label>
@@ -804,6 +1041,31 @@ export default function Settings() {
             </div>
           </div>
 
+          {/* API Usage Statistics */}
+          {Object.keys(apiUsageStats).length > 0 && (
+            <div className="space-y-3 rounded-xl border bg-card p-6">
+              <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
+                <BarChart3 className="h-4 w-4" /> API 调用统计
+              </h2>
+              <div className="space-y-2">
+                {Object.entries(apiUsageStats).map(([name, stats]) => (
+                  <div key={name} className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <span className="text-sm font-medium">{name}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">{stats.calls} 次调用</span>
+                    </div>
+                    {stats.lastUsed && (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        {new Date(stats.lastUsed).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Export / Import */}
           <div className="space-y-3 rounded-xl border bg-card p-6">
             <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
@@ -827,7 +1089,7 @@ export default function Settings() {
   );
 }
 
-// -- 向量配置行组件 ---------------------------------------------
+// Vector config row component
 function VectorConfigRow({ item, onSave }: { item: AppConfigItem; onSave: (id: number, value: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(item.config_value);
