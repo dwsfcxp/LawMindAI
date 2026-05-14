@@ -248,7 +248,9 @@ class LawVerificationEngine:
 }}""",
                 }],
             )
-            text = response.content[0].text if response.content else ""
+            text = ""
+            if response.content and len(response.content) > 0:
+                text = response.content[0].text or ""
             # 解析JSON
             text = text.strip()
             if text.startswith("```"):
