@@ -191,7 +191,7 @@ def unregister_dynamic_adapter(config_id: int):
     from app.services.data_sources.base import DataSourceRegistry
     key = f"user_api_{config_id}"
     adapter = DataSourceRegistry.get(key)
-    if adapter and hasattr(adapter, 'aclose'):
+    if adapter is not None and hasattr(adapter, 'aclose'):
         import asyncio
         try:
             loop = asyncio.get_event_loop()

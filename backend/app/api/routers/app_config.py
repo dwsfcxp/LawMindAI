@@ -104,8 +104,12 @@ async def batch_update(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await _ensure_defaults(db, current_user)
     results = []
+    needs_vector_reset = False
     for item in items:
+        if item.config_value is None:
+            continue
         result = await db.execute(
             select(AppConfig).where(
                 AppConfig.owner_id == current_user.id,
@@ -115,12 +119,19 @@ async def batch_update(
         row = result.scalar_one_or_none()
         if row:
             row.config_value = item.config_value
+            if item.description is not None:
+                row.description = item.description
+            if item.category is not None:
+                row.category = item.category
             results.append(row)
+            if row.category == "vector_db":
+                needs_vector_reset = True
     await db.commit()
     for r in results:
         await db.refresh(r)
 
-    _reset_vector_service()
+    if needs_vector_reset:
+        _reset_vector_service()
     return results
 
 
@@ -128,8 +139,12 @@ async def batch_update(
 async def reset_vector_connection(
     current_user: User = Depends(get_current_user),
 ):
-    _reset_vector_service()
-    return {"message": "向量数据库连接已重置"}
+    try:
+        _reset_vector_service()
+        return {"message": "向量数据库连接已重置"}
+    except Exception as e:
+        logger.error(f"Reset vector connection failed: {e}")
+        raise HTTPException(500, f"重置向量数据库连接失败: {str(e)[:200]}")
 
 
 def _reset_vector_service():
@@ -147,11 +162,18 @@ async def _ensure_defaults(db: AsyncSession, user: User):
         select(AppConfig.config_key).where(AppConfig.owner_id == user.id)
     )
     existing_keys = {row[0] for row in result.all()}
+    new_items = []
     for default in VECTOR_DB_DEFAULTS:
         if default["config_key"] not in existing_keys:
-            row = AppConfig(
+            new_items.append(AppConfig(
                 owner_id=user.id,
                 **default,
-            )
-            db.add(row)
-    await db.commit()
+            ))
+    if new_items:
+        db.add_all(new_items)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            # Concurrent request may have inserted these keys already;
+            # silently swallow the duplicate-key error.

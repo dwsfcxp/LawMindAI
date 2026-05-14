@@ -30,7 +30,7 @@ async def list_knowledge(
 ):
     query = select(KnowledgeItem).where(
         (KnowledgeItem.owner_id == current_user.id) |
-        ((current_user.team_id != None) & (KnowledgeItem.team_id == current_user.team_id))  # noqa: E711
+        ((current_user.team_id.is_not(None)) & (KnowledgeItem.team_id == current_user.team_id))
     )
     if tag:
         query = query.where(KnowledgeItem.tags.contains([tag]))
@@ -61,7 +61,7 @@ async def create_knowledge(
     try:
         from app.services.vector.store import get_vector_service
         svc = get_vector_service()
-        await svc.add_statutes([{
+        await svc.add_knowledge([{
             "id": f"knowledge_{row.id}",
             "title": row.title,
             "content": row.content[:5000],
@@ -81,16 +81,18 @@ async def knowledge_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    owner_filter = (KnowledgeItem.owner_id == current_user.id)
+    team_filter = (
+        (current_user.team_id.is_not(None))
+        & (KnowledgeItem.team_id == current_user.team_id)
+    )
+    base_where = owner_filter | team_filter
     total = await db.execute(
-        select(func.count(KnowledgeItem.id)).where(
-            (KnowledgeItem.owner_id == current_user.id) | (KnowledgeItem.team_id == current_user.team_id)
-        )
+        select(func.count(KnowledgeItem.id)).where(base_where)
     )
     # Collect all tags
     result = await db.execute(
-        select(KnowledgeItem.tags).where(
-            (KnowledgeItem.owner_id == current_user.id) | (KnowledgeItem.team_id == current_user.team_id)
-        )
+        select(KnowledgeItem.tags).where(base_where)
     )
     all_tags = set()
     for row in result.scalars().all():
@@ -162,7 +164,7 @@ async def upload_file_to_knowledge(
         try:
             from app.services.vector.store import get_vector_service
             svc = get_vector_service()
-            await svc.add_statutes([{
+            await svc.add_knowledge([{
                 "id": f"knowledge_{row.id}",
                 "title": row.title,
                 "content": row.content[:5000],
@@ -248,7 +250,7 @@ async def delete_knowledge(
         try:
             from app.services.vector.store import get_vector_service
             svc = get_vector_service()
-            await svc.delete_statutes([row.embedding_id])
+            await svc.delete_knowledge([row.embedding_id])
         except Exception as e:
             logger.warning(f"Vector delete failed for knowledge {item_id}: {e}")
 

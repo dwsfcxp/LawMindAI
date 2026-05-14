@@ -4,6 +4,7 @@ import time
 import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -330,13 +331,19 @@ async def test_api(
         raise HTTPException(404, "配置不存在")
 
     try:
-        adapter = register_dynamic_adapter(row) if row.is_enabled else None
-        if not adapter:
-            adapter = register_dynamic_adapter(row)
+        from app.services.data_sources.dynamic_adapter import DynamicExternalApiAdapter
+        # Create a temporary adapter just for testing — don't pollute the registry
+        adapter = DynamicExternalApiAdapter(row)
 
         start = time.time()
         ok = await adapter.health_check()
         latency = int((time.time() - start) * 1000)
+
+        # Clean up the temporary HTTP client
+        try:
+            await adapter.aclose()
+        except Exception:
+            pass
 
         if ok:
             return ExternalApiTestResult(

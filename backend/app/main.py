@@ -4,12 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.core.database import engine, Base
-from app.api.routers import auth, cases, documents, templates, search, health, llm_settings, evidence, vector, research, verification, contracts, knowledge
+from app.api.routers import auth, cases, documents, templates, search, health, llm_settings, evidence, vector, research, verification, contracts, knowledge, external_apis, app_config
 from pathlib import Path
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import logging
+    startup_logger = logging.getLogger("app.startup")
+
     settings = get_settings()
     Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
@@ -20,16 +23,41 @@ async def lifespan(app: FastAPI):
         from app.services.data_sources.beida_fabao import register_beida_fabao
         register_beida_fabao()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to register data sources: {e}")
+        startup_logger.warning(f"Failed to register data sources: {e}")
 
-    # 加载自定义API数据源
+    # 加载自定义API数据源（YAML）
     try:
         from app.services.data_sources.custom_api import load_custom_data_sources
         load_custom_data_sources()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to load custom data sources: {e}")
+        startup_logger.warning(f"Failed to load custom data sources: {e}")
+
+    # 加载用户自定外部API配置（数据库）
+    try:
+        from app.services.data_sources.dynamic_adapter import register_dynamic_adapter
+        from app.models.external_api import ExternalApiConfig
+        from sqlalchemy import select
+        from app.core.database import async_session
+        async with async_session() as session:
+            result = await session.execute(
+                select(ExternalApiConfig).where(ExternalApiConfig.is_enabled == True)
+            )
+            for row in result.scalars().all():
+                try:
+                    register_dynamic_adapter(row)
+                except Exception as ex:
+                    startup_logger.warning(f"Failed to register dynamic adapter '{row.name}': {ex}")
+    except Exception as e:
+        startup_logger.warning(f"Failed to load dynamic API configs: {e}")
+
+    # Pre-warm vector service (non-blocking — don't crash if ChromaDB is down)
+    try:
+        from app.services.vector.store import get_vector_service
+        svc = get_vector_service()
+        if not svc._ensure_connection():
+            startup_logger.warning("ChromaDB not available at startup — vector features will be disabled until connection succeeds")
+    except Exception as e:
+        startup_logger.warning(f"Vector service initialization skipped: {e}")
 
     yield
     await engine.dispose()
@@ -65,6 +93,8 @@ def create_app() -> FastAPI:
     app.include_router(verification.router, prefix="/api/v1/law-verify", tags=["法条核查"])
     app.include_router(contracts.router, prefix="/api/v1/contracts", tags=["合同审查"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["知识库"])
+    app.include_router(external_apis.router, prefix="/api/v1/external-apis", tags=["外部API"])
+    app.include_router(app_config.router, prefix="/api/v1/app-config", tags=["系统配置"])
 
     return app
 
