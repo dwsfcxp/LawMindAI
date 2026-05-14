@@ -1,5 +1,6 @@
 """合同审查路由"""
 
+import asyncio
 import uuid
 import logging
 import tempfile
@@ -71,7 +72,7 @@ async def upload_contract(
     ext = Path(file.filename or ".bin").suffix
     safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
     dest = upload_dir / safe_name
-    dest.write_bytes(content)
+    await asyncio.to_thread(dest.write_bytes, content)
 
     row = Contract(
         owner_id=current_user.id,
@@ -104,6 +105,73 @@ async def upload_contract(
         await db.commit()
         await db.refresh(row)
 
+    return _to_out(row)
+
+
+@router.post("/draft", response_model=ContractOut)
+async def draft_contract(
+    title: str = Form(...),
+    description: str = Form(...),
+    case_id: int | None = Form(None),
+    file: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """根据用户描述和可选的参考文件起草合同。"""
+    settings = get_settings()
+    reference_text = ""
+
+    if file:
+        from app.services.evidence.ocr import validate_file_type, extract_text
+        if not validate_file_type(file.filename or ""):
+            raise HTTPException(400, "不支持的参考文件类型")
+        content = await file.read()
+        if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+            raise HTTPException(400, "文件大小超过限制")
+
+        tmp_dir = settings.upload_path / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        ext = Path(file.filename or ".bin").suffix
+        tmp_path = tmp_dir / f"{uuid.uuid4().hex[:12]}{ext}"
+        await asyncio.to_thread(tmp_path.write_bytes, content)
+        try:
+            reference_text = await extract_text(tmp_path)
+        finally:
+            await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+
+    # 构建提示词
+    prompt_parts = [
+        "你是一位专业的合同起草律师。请根据以下需求起草一份完整的合同：\n",
+        f"合同标题：{title}\n",
+        f"需求描述：{description}\n",
+    ]
+    if reference_text and not reference_text.startswith("["):
+        prompt_parts.append(f"\n参考文件内容：\n{reference_text[:8000]}\n")
+    prompt_parts.append("\n请起草一份格式规范、条款完整的合同文本。使用中文，包含所有必要条款（标的、数量、价款、履行方式、违约责任、争议解决等）。")
+
+    try:
+        from app.services.llm_client import create_llm_client_from_settings
+        client = create_llm_client_from_settings(settings)
+        response = await client.messages.create(
+            model=settings.CLAUDE_MODEL,
+            max_tokens=settings.CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
+        )
+        draft_text = response.content[0].text if response.content else ""
+    except Exception as e:
+        raise HTTPException(503, f"合同起草失败: {str(e)[:200]}")
+
+    row = Contract(
+        owner_id=current_user.id,
+        case_id=case_id,
+        title=title,
+        parsed_text=draft_text,
+        file_type="draft",
+        status="completed",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
     return _to_out(row)
 
 
@@ -266,7 +334,7 @@ async def _export_docx(row: Contract) -> "FileResponse":
     safe_title = "".join(c for c in row.title if c.isalnum() or c in "（）()—")[:50]
     filename = f"审查报告_{safe_title}.docx"
     tmp = tempfile.NamedTemporaryFile(suffix=".docx", delete=False, prefix=f"contract_{row.id}_")
-    doc.save(tmp.name)
+    await asyncio.to_thread(doc.save, tmp.name)
     tmp.close()
 
     return FileResponse(

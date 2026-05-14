@@ -1,8 +1,9 @@
 """北大法宝MCP适配器 — LegalDataSourceAdapter实现"""
 
 import json
-import subprocess
+import asyncio
 import logging
+import subprocess
 from app.services.data_sources.base import (
     LegalDataSourceAdapter,
     LawSearchResult,
@@ -20,7 +21,8 @@ class BeidaFabaoAdapter(LegalDataSourceAdapter):
 
     async def search_law(self, query: str, limit: int = 10, **filters) -> list[LawSearchResult]:
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["npx", "-y", "@ansvar/chinese-law-mcp"],
                 capture_output=True, text=True, timeout=30,
                 input=json.dumps({"method": "search", "query": query, "limit": limit}),
@@ -48,7 +50,8 @@ class BeidaFabaoAdapter(LegalDataSourceAdapter):
 
     async def get_provision(self, doc_id: str, article: str = None) -> dict | None:
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["npx", "-y", "@ansvar/chinese-law-mcp"],
                 capture_output=True, text=True, timeout=30,
                 input=json.dumps({"method": "get", "document_id": doc_id, "article": article}),
@@ -61,7 +64,8 @@ class BeidaFabaoAdapter(LegalDataSourceAdapter):
 
     async def health_check(self) -> bool:
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["npx", "-y", "@ansvar/chinese-law-mcp"],
                 capture_output=True, text=True, timeout=15,
             )

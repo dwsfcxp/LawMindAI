@@ -102,6 +102,10 @@ class CustomAPIAdapter(LegalDataSourceAdapter):
         except Exception:
             return False
 
+    async def aclose(self):
+        """Clean up the HTTP client."""
+        await self._client.aclose()
+
 
 def load_custom_data_sources(config_dir: str = "config/data_sources"):
     """从配置目录加载所有自定义数据源"""

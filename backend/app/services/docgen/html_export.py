@@ -1,5 +1,6 @@
 """HTML导出 — 仿宋字体法院标准排版"""
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -80,7 +81,7 @@ async def export_to_html(doc, output_dir: Path) -> str:
 
     filename = f"{doc.id}_{_safe_filename(title)}.html"
     filepath = output_dir / filename
-    filepath.write_text(html, encoding="utf-8")
+    await asyncio.to_thread(filepath.write_text, html, "utf-8")
     return str(filepath)
 
 

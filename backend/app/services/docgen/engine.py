@@ -3,8 +3,7 @@
 import json
 import re
 import logging
-import anthropic
-from app.config import Settings, get_settings
+from app.config import get_settings
 from app.services.llm_client import create_llm_client, create_llm_client_from_settings
 from app.services.docgen.prompts import (
     CASE_PARSING_PROMPT,
@@ -48,15 +47,21 @@ class DocumentGenerationEngine:
                 messages=[{"role": "user", "content": user}],
             )
             return response.content[0].text
-        except anthropic.APIConnectionError as e:
-            logger.error(f"AI API connection error: {e}")
-            raise RuntimeError(f"AI服务连接失败，请检查网络: {e}")
-        except anthropic.RateLimitError:
-            logger.error("AI API rate limit hit")
-            raise RuntimeError("AI服务请求过于频繁，请稍后再试")
-        except anthropic.APIStatusError as e:
-            logger.error(f"AI API error {e.status_code}: {e.message}")
-            raise RuntimeError(f"AI服务错误({e.status_code}): {e.message}")
+        except Exception as e:
+            # Handle both Anthropic and OpenAI-compatible client errors
+            error_type = type(e).__name__
+            if 'ConnectionError' in error_type or 'connection' in str(e).lower():
+                logger.error(f"AI API connection error: {e}")
+                raise RuntimeError(f"AI服务连接失败，请检查网络: {e}")
+            if 'RateLimitError' in error_type or 'rate' in str(e).lower():
+                logger.error("AI API rate limit hit")
+                raise RuntimeError("AI服务请求过于频繁，请稍后再试")
+            if 'StatusError' in error_type or hasattr(e, 'status_code'):
+                status_code = getattr(e, 'status_code', 'unknown')
+                message = getattr(e, 'message', str(e))
+                logger.error(f"AI API error {status_code}: {message}")
+                raise RuntimeError(f"AI服务错误({status_code}): {message}")
+            raise
 
     def _parse_json_response(self, text: str) -> dict:
         text = text.strip()
@@ -135,6 +140,7 @@ class DocumentGenerationEngine:
         doc_type: str,
         template=None,
         extra_instructions: str | None = None,
+        research_context: str | None = None,
     ) -> dict:
         import asyncio
 
@@ -184,6 +190,7 @@ class DocumentGenerationEngine:
                 parsed_case=json.dumps(parsed_case, ensure_ascii=False, indent=2),
                 related_laws=combined_laws,
                 related_cases=combined_cases,
+                research_context=research_context or "无",
                 template_structure=template_structure,
                 extra_instructions=extra_instructions or "无",
             ),

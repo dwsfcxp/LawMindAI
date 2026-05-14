@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -20,9 +20,11 @@ async def list_templates(
     db: AsyncSession = Depends(get_db),
 ):
     q = select(Template).where(
-        (Template.is_public == True) |
-        (Template.owner_id == current_user.id) |
-        (Template.team_id == current_user.team_id)
+        or_(
+            Template.is_public == True,
+            Template.owner_id == current_user.id,
+            and_(current_user.team_id.isnot(None), Template.team_id == current_user.team_id),
+        )
     )
     if type:
         q = q.where(Template.type == type)

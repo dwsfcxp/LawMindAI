@@ -1,5 +1,6 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -9,6 +10,7 @@ from app.models.case import Case
 from app.models.document import Document
 from app.schemas.case import CaseCreate, CaseUpdate, CaseOut
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -54,7 +56,10 @@ async def list_cases(
     q = (
         select(Case, doc_count_sq)
         .where(
-            (Case.owner_id == current_user.id) | (Case.team_id == current_user.team_id)
+            or_(
+                Case.owner_id == current_user.id,
+                and_(current_user.team_id.isnot(None), Case.team_id == current_user.team_id),
+            )
         )
     )
     if status:
@@ -92,7 +97,7 @@ async def get_case(
     db: AsyncSession = Depends(get_db),
 ):
     case = await db.get(Case, case_id)
-    if not case or (case.owner_id != current_user.id and case.team_id != current_user.team_id):
+    if not case or (case.owner_id != current_user.id and (not current_user.team_id or case.team_id != current_user.team_id)):
         raise HTTPException(404, "案件不存在")
     doc_count = await db.execute(
         select(func.count()).where(Document.case_id == case.id)
@@ -118,3 +123,55 @@ async def update_case(
         select(func.count()).where(Document.case_id == case.id)
     )
     return CaseOut.model_validate(_case_to_out(case, doc_count.scalar() or 0))
+
+
+@router.post("/{case_id}/analyze")
+async def analyze_case(
+    case_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI 分析案件：提取当事人、案由、关键时间、争议焦点、策略建议。"""
+    case = await db.get(Case, case_id)
+    if not case or (case.owner_id != current_user.id and (not current_user.team_id or case.team_id != current_user.team_id)):
+        raise HTTPException(404, "案件不存在")
+
+    if not case.description:
+        raise HTTPException(400, "案件描述为空，无法分析")
+
+    from app.services.llm_client import create_llm_client_from_settings
+    from app.config import get_settings
+    settings = get_settings()
+
+    prompt = f"""你是资深中国执业律师。请分析以下案件，输出结构化的法律分析报告：
+
+## 案件信息
+标题：{case.title}
+类型：{case.case_type}
+原告：{case.plaintiff or '未知'}
+被告：{case.defendant or '未知'}
+描述：{case.description}
+
+## 请输出以下内容（用 Markdown 格式）：
+1. **案件概要** — 一句话概括案件核心
+2. **当事人信息** — 原被告基本信息及法律地位
+3. **案由认定** — 案由及法律关系分析
+4. **关键时间节点** — 诉讼时效、重要日期提醒
+5. **争议焦点** — 双方核心争议点
+6. **适用法条** — 相关法律法规引用
+7. **诉讼策略建议** — 原告/被告各应如何应对
+8. **风险评估** — 胜诉概率及风险提示"""
+
+    try:
+        client = create_llm_client_from_settings(settings)
+        response = await client.messages.create(
+            model=settings.CLAUDE_MODEL,
+            max_tokens=settings.CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        analysis = response.content[0].text if response.content else ""
+    except Exception as e:
+        logger.error(f"Case analysis failed for {case_id}: {e}")
+        raise HTTPException(503, f"AI分析失败: {str(e)[:200]}")
+
+    return {"case_id": case_id, "analysis": analysis}

@@ -79,7 +79,19 @@ async def analyze_evidence_chain(
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(raw)
-    except (json.JSONDecodeError, Exception) as e:
+    except json.JSONDecodeError as e:
+        logger.warning(f"Evidence chain analysis JSON parse failed: {e}")
+        raw_text = raw if 'raw' in dir() else ""
+        result = {
+            "completeness_score": None,
+            "chain_status": "分析失败",
+            "facts_to_prove": [],
+            "contradictions": [],
+            "missing_evidence": [],
+            "suggested_order": [],
+            "summary": f"证据链分析结果解析失败。{raw_text[:500]}" if raw_text else "证据链分析服务暂时不可用。",
+        }
+    except Exception as e:
         logger.warning(f"Evidence chain analysis failed: {e}")
         raw_text = ""
         try:

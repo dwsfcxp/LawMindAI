@@ -1,5 +1,6 @@
 """合同文档解析服务 — 将PDF/Word/图片转为结构化条款"""
 
+import asyncio
 import base64
 import logging
 from pathlib import Path
@@ -54,29 +55,33 @@ async def _extract_text(file_path: Path, llm_client=None, model: str = "glm-5.1"
 
 
 async def _extract_pdf(file_path: Path) -> str:
-    import pypdf
-    reader = pypdf.PdfReader(str(file_path))
-    texts = []
-    for page in reader.pages:
-        t = page.extract_text()
-        if t:
-            texts.append(t.strip())
-    return "\n\n".join(texts) if texts else "[PDF为扫描件，需要OCR识别]"
+    def _sync():
+        import pypdf
+        reader = pypdf.PdfReader(str(file_path))
+        texts = []
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                texts.append(t.strip())
+        return "\n\n".join(texts) if texts else "[PDF为扫描件，需要OCR识别]"
+    return await asyncio.to_thread(_sync)
 
 
 async def _extract_docx(file_path: Path) -> str:
-    from docx import Document
-    doc = Document(str(file_path))
-    parts = []
-    for table in doc.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
-    for p in doc.paragraphs:
-        if p.text.strip():
-            parts.append(p.text.strip())
-    return "\n".join(parts)
+    def _sync():
+        from docx import Document
+        doc = Document(str(file_path))
+        parts = []
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        for p in doc.paragraphs:
+            if p.text.strip():
+                parts.append(p.text.strip())
+        return "\n".join(parts)
+    return await asyncio.to_thread(_sync)
 
 
 async def _extract_image(file_path: Path, llm_client, model: str) -> str:

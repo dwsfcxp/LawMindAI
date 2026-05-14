@@ -1,5 +1,6 @@
 """PDF导出 — 基于HTML转PDF"""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -12,7 +13,7 @@ async def export_to_pdf(doc, output_dir: Path) -> str:
 
     # 先生成HTML
     html_path = await export_to_html(doc, output_dir)
-    html_content = Path(html_path).read_text(encoding="utf-8")
+    html_content = await asyncio.to_thread(Path(html_path).read_text, "utf-8")
 
     title = doc.title or "法律文书"
     filename = f"{doc.id}_{_safe_filename(title)}.pdf"
@@ -21,7 +22,7 @@ async def export_to_pdf(doc, output_dir: Path) -> str:
     # 尝试使用 weasyprint
     try:
         from weasyprint import HTML
-        HTML(string=html_content).write_pdf(str(pdf_path))
+        await asyncio.to_thread(lambda: HTML(string=html_content).write_pdf(str(pdf_path)))
         return str(pdf_path)
     except ImportError:
         logger.warning("weasyprint not installed, trying alternative")
@@ -31,14 +32,19 @@ async def export_to_pdf(doc, output_dir: Path) -> str:
     # 备选：使用 pdfkit (需要 wkhtmltopdf)
     try:
         import pdfkit
-        pdfkit.from_string(html_content, str(pdf_path), options={
-            'encoding': 'UTF-8',
-            'page-size': 'A4',
-            'margin-top': '37mm',
-            'margin-right': '28mm',
-            'margin-bottom': '35mm',
-            'margin-left': '26mm',
-        })
+        await asyncio.to_thread(
+            pdfkit.from_string,
+            html_content,
+            str(pdf_path),
+            {
+                'encoding': 'UTF-8',
+                'page-size': 'A4',
+                'margin-top': '37mm',
+                'margin-right': '28mm',
+                'margin-bottom': '35mm',
+                'margin-left': '26mm',
+            },
+        )
         return str(pdf_path)
     except ImportError:
         logger.warning("pdfkit not installed either")

@@ -104,6 +104,7 @@ class LawVerificationEngine:
 
     async def _verify_npc_gov(self, req: LawVerifyRequest) -> LawVerifyResult:
         """验证来源1: 全国人大法律法规库 flk.npc.gov.cn"""
+        error_msg = "连接超时"
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 # 尝试搜索
@@ -115,7 +116,7 @@ class LawVerificationEngine:
                     "gbrqEnd": "",
                     "sxrqStart": "",
                     "sxrqEnd": "",
-                    "sort": true,
+                    "sort": True,
                     "page": 1,
                     "pageSize": 5,
                     "searchParam": req.law_name,
@@ -132,13 +133,14 @@ class LawVerificationEngine:
                     )
         except Exception as e:
             logger.debug(f"NPC gov verification failed: {e}")
+            error_msg = str(e)[:100]
 
         return LawVerifyResult(
             source="全国人大法律法规库",
             found=False,
             matched_content="",
             is_consistent=False,
-            notes=f"无法访问flk.npc.gov.cn: {str(e)[:100] if 'e' in dir() else '连接超时'}",
+            notes=f"无法访问flk.npc.gov.cn: {error_msg}",
         )
 
     async def _verify_gov_cn(self, req: LawVerifyRequest) -> LawVerifyResult:

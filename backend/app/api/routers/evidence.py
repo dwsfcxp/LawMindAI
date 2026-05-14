@@ -1,5 +1,6 @@
 """证据管理路由"""
 
+import asyncio
 import uuid
 import logging
 from pathlib import Path
@@ -80,7 +81,7 @@ async def upload_file(
         raise HTTPException(404, "证据不存在")
 
     if not validate_file_type(file.filename or ""):
-        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOCX, TXT, PNG, JPG, BMP, TIFF")
+        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOC, DOCX, TXT, XLSX, XLS, PNG, JPG, GIF, WEBP, BMP, TIFF")
 
     settings = get_settings()
     content = await file.read()
@@ -93,7 +94,7 @@ async def upload_file(
     ext = Path(file.filename or ".bin").suffix
     safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
     dest = upload_dir / safe_name
-    dest.write_bytes(content)
+    await asyncio.to_thread(dest.write_bytes, content)
 
     row.file_path = f"evidence/{row.case_id}/{safe_name}"
     await db.commit()

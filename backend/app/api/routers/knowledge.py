@@ -1,15 +1,20 @@
 """知识库管理路由"""
 
+import asyncio
+import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.config import get_settings
 from app.models.user import User
 from app.models.knowledge import KnowledgeItem
 from app.schemas.knowledge import KnowledgeCreate, KnowledgeUpdate, KnowledgeOut
+from app.services.evidence.ocr import validate_file_type, extract_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,7 +29,8 @@ async def list_knowledge(
     current_user: User = Depends(get_current_user),
 ):
     query = select(KnowledgeItem).where(
-        (KnowledgeItem.owner_id == current_user.id) | (KnowledgeItem.team_id == current_user.team_id)
+        (KnowledgeItem.owner_id == current_user.id) |
+        ((current_user.team_id != None) & (KnowledgeItem.team_id == current_user.team_id))  # noqa: E711
     )
     if tag:
         query = query.where(KnowledgeItem.tags.contains([tag]))
@@ -103,6 +109,92 @@ async def upload_text_to_knowledge(
     return await create_knowledge(data, db, current_user)
 
 
+@router.post("/upload-file", response_model=KnowledgeOut)
+async def upload_file_to_knowledge(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """上传文件到知识库，自动提取文字并向量化入库。"""
+    if not validate_file_type(file.filename or ""):
+        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOC, DOCX, TXT, XLSX, XLS, PNG, JPG, GIF, WEBP, BMP, TIFF")
+
+    settings = get_settings()
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(400, f"文件大小超过{settings.MAX_UPLOAD_SIZE_MB}MB限制")
+
+    tmp_dir = settings.upload_path / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or ".bin").suffix
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex[:12]}{ext}"
+    await asyncio.to_thread(tmp_path.write_bytes, content)
+
+    try:
+        text = await extract_text(tmp_path)
+    finally:
+        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+
+    if not text or text.startswith("["):
+        raise HTTPException(400, f"文件文字提取失败: {text}")
+
+    # 分段：超过2000字则按段落拆分为多条
+    chunks = _split_text(text, max_chars=2000)
+    items = []
+    for i, chunk in enumerate(chunks):
+        title = Path(file.filename).stem
+        if len(chunks) > 1:
+            title = f"{title} (第{i+1}部分)"
+        row = KnowledgeItem(
+            title=title,
+            content=chunk,
+            source=file.filename,
+            tags=["文件上传"],
+            owner_id=current_user.id,
+            team_id=current_user.team_id,
+        )
+        db.add(row)
+        await db.flush()
+        await db.refresh(row)
+        items.append(row)
+
+        # 自动向量化
+        try:
+            from app.services.vector.store import get_vector_service
+            svc = get_vector_service()
+            await svc.add_statutes([{
+                "id": f"knowledge_{row.id}",
+                "title": row.title,
+                "content": row.content[:5000],
+                "metadata": {"source": row.source, "type": "knowledge", "tags": row.tags},
+            }])
+            row.embedding_id = f"knowledge_{row.id}"
+        except Exception as e:
+            logger.warning(f"Auto vector ingest failed for knowledge {row.id}: {e}")
+
+    await db.commit()
+    await db.refresh(items[0])
+    return items[0]
+
+
+def _split_text(text: str, max_chars: int = 2000) -> list[str]:
+    """将长文本按段落拆分。"""
+    if len(text) <= max_chars:
+        return [text]
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current = ""
+    for p in paragraphs:
+        if len(current) + len(p) + 2 > max_chars and current:
+            chunks.append(current.strip())
+            current = p
+        else:
+            current = current + "\n\n" + p if current else p
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks if chunks else [text]
+
+
 @router.get("/{item_id}", response_model=KnowledgeOut)
 async def get_knowledge(
     item_id: int,
@@ -113,7 +205,7 @@ async def get_knowledge(
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(404, "知识条目不存在")
-    if row.owner_id != current_user.id and row.team_id != current_user.team_id:
+    if row.owner_id != current_user.id and (not current_user.team_id or row.team_id != current_user.team_id):
         raise HTTPException(403, "无权访问")
     return row
 

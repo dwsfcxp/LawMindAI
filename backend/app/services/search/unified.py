@@ -3,7 +3,6 @@
 import json
 import re
 import logging
-import anthropic
 from app.config import get_settings
 from app.services.llm_client import create_llm_client, create_llm_client_from_settings
 from app.schemas.search import (
@@ -87,13 +86,15 @@ class UnifiedSearchService:
 
         import asyncio
 
+        rt = result_type.lower().rstrip("s")
+
         tasks = []
-        if result_type in ("all", "law"):
+        if rt in ("all", "law"):
             tasks.append(self._search_laws_ai(query, min(top_k, 10)))
         else:
             tasks.append(self._empty())
 
-        if result_type in ("all", "case"):
+        if rt in ("all", "case"):
             tasks.append(self._search_cases_ai(query, min(top_k, 10)))
         else:
             tasks.append(self._empty())

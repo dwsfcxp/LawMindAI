@@ -23,6 +23,7 @@ class ContractOut(BaseModel):
 
     @model_validator(mode="after")
     def _set_has_file(self) -> "ContractOut":
+        # has_file defaults to False; routers set it explicitly after model_validate
         return self
 
     model_config = {"from_attributes": True}

@@ -7,9 +7,11 @@ from app.models.knowledge import KnowledgeItem
 from app.models.llm_settings import LLMSettings
 from app.models.research import ResearchReport
 from app.models.contract import Contract
+from app.models.app_config import AppConfig
+from app.models.external_api import ExternalApiConfig
 
 __all__ = [
     "User", "Team", "Case", "Template", "Document",
     "Evidence", "SearchRecord", "KnowledgeItem", "LLMSettings",
-    "ResearchReport", "Contract",
+    "ResearchReport", "Contract", "AppConfig", "ExternalApiConfig",
 ]

@@ -1,5 +1,6 @@
 """向量存储服务 — 基于ChromaDB的案例和法条向量检索"""
 
+import asyncio
 import logging
 from typing import Optional
 from app.config import get_settings
@@ -26,6 +27,7 @@ class VectorStoreService:
         self._client = None
         self._cases_col = None
         self._statutes_col = None
+        self._knowledge_col = None
 
     def _ensure_connection(self):
         if self._client is not None:
@@ -45,6 +47,10 @@ class VectorStoreService:
                 "legal_statutes",
                 metadata={"hnsw:space": "cosine", "description": "法律法规向量库"},
             )
+            self._knowledge_col = self._client.get_or_create_collection(
+                "knowledge",
+                metadata={"hnsw:space": "cosine", "description": "个人知识库"},
+            )
             logger.info("ChromaDB connected, cases=%d, statutes=%d",
                         self._cases_col.count(), self._statutes_col.count())
             return True
@@ -63,7 +69,7 @@ class VectorStoreService:
         docs = [f"{it['title']}\n{it['content']}" for it in items]
         metas = [it.get("metadata", {}) for it in items]
         try:
-            self._cases_col.upsert(ids=ids, documents=docs, metadatas=metas)
+            await asyncio.to_thread(self._cases_col.upsert, ids=ids, documents=docs, metadatas=metas)
             return len(ids)
         except Exception as e:
             logger.error(f"Add cases failed: {e}")
@@ -77,7 +83,7 @@ class VectorStoreService:
         docs = [f"{it['title']}\n{it['content']}" for it in items]
         metas = [it.get("metadata", {}) for it in items]
         try:
-            self._statutes_col.upsert(ids=ids, documents=docs, metadatas=metas)
+            await asyncio.to_thread(self._statutes_col.upsert, ids=ids, documents=docs, metadatas=metas)
             return len(ids)
         except Exception as e:
             logger.error(f"Add statutes failed: {e}")
@@ -85,11 +91,19 @@ class VectorStoreService:
 
     # ── 搜索 ──────────────────────────────────────────────────────────
 
-    async def search_cases(self, query: str, top_k: int = 10) -> list[dict]:
+    async def search_cases(self, query: str, top_k: int = 10, collection: str | None = None) -> list[dict]:
         if not self._ensure_connection():
             return []
+        # Route to knowledge collection if requested
+        if collection == "knowledge" and self._knowledge_col is not None:
+            return await self.search_knowledge(query, top_k)
         try:
-            results = self._cases_col.query(query_texts=[query], n_results=min(top_k, self._cases_col.count() or 1))
+            count = self._cases_col.count()
+            if not count:
+                return []
+            results = await asyncio.to_thread(
+                self._cases_col.query, query_texts=[query], n_results=min(top_k, count)
+            )
             items = []
             for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
                 items.append({
@@ -107,7 +121,12 @@ class VectorStoreService:
         if not self._ensure_connection():
             return []
         try:
-            results = self._statutes_col.query(query_texts=[query], n_results=min(top_k, self._statutes_col.count() or 1))
+            count = self._statutes_col.count()
+            if not count:
+                return []
+            results = await asyncio.to_thread(
+                self._statutes_col.query, query_texts=[query], n_results=min(top_k, count)
+            )
             items = []
             for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
                 items.append({
@@ -127,7 +146,7 @@ class VectorStoreService:
         if not self._ensure_connection():
             return False
         try:
-            self._cases_col.delete(ids=ids)
+            await asyncio.to_thread(self._cases_col.delete, ids=ids)
             return True
         except Exception as e:
             logger.warning(f"Delete cases failed: {e}")
@@ -137,10 +156,56 @@ class VectorStoreService:
         if not self._ensure_connection():
             return False
         try:
-            self._statutes_col.delete(ids=ids)
+            await asyncio.to_thread(self._statutes_col.delete, ids=ids)
             return True
         except Exception as e:
             logger.warning(f"Delete statutes failed: {e}")
+            return False
+
+    async def search_knowledge(self, query: str, top_k: int = 10) -> list[dict]:
+        if not self._ensure_connection() or self._knowledge_col is None:
+            return []
+        try:
+            count = self._knowledge_col.count()
+            if not count:
+                return []
+            results = await asyncio.to_thread(
+                self._knowledge_col.query, query_texts=[query], n_results=min(top_k, count)
+            )
+            items = []
+            for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
+                items.append({
+                    "id": results["ids"][0][i],
+                    "content": doc,
+                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                    "distance": results["distances"][0][i] if results["distances"] else 0,
+                })
+            return items
+        except Exception as e:
+            logger.warning(f"Search knowledge failed: {e}")
+            return []
+
+    async def add_knowledge(self, items: list[dict]) -> int:
+        if not self._ensure_connection() or not items or self._knowledge_col is None:
+            return 0
+        ids = [str(it["id"]) for it in items]
+        docs = [f"{it.get('title', '')}\n{it['content']}" for it in items]
+        metas = [it.get("metadata", {}) for it in items]
+        try:
+            await asyncio.to_thread(self._knowledge_col.upsert, ids=ids, documents=docs, metadatas=metas)
+            return len(ids)
+        except Exception as e:
+            logger.error(f"Add knowledge failed: {e}")
+            return 0
+
+    async def delete_knowledge(self, ids: list[str]) -> bool:
+        if not self._ensure_connection() or self._knowledge_col is None:
+            return False
+        try:
+            await asyncio.to_thread(self._knowledge_col.delete, ids=ids)
+            return True
+        except Exception as e:
+            logger.warning(f"Delete knowledge failed: {e}")
             return False
 
     # ── 统计 ──────────────────────────────────────────────────────────
@@ -149,10 +214,14 @@ class VectorStoreService:
         if not self._ensure_connection():
             return {"cases_count": 0, "statutes_count": 0, "connected": False}
         try:
+            cases_count = await asyncio.to_thread(self._cases_col.count)
+            statutes_count = await asyncio.to_thread(self._statutes_col.count)
+            knowledge_count = await asyncio.to_thread(self._knowledge_col.count) if self._knowledge_col else 0
             return {
-                "cases_count": self._cases_col.count(),
-                "statutes_count": self._statutes_col.count(),
+                "cases_count": cases_count,
+                "statutes_count": statutes_count,
+                "knowledge_count": knowledge_count,
                 "connected": True,
             }
         except Exception:
-            return {"cases_count": 0, "statutes_count": 0, "connected": False}
+            return {"cases_count": 0, "statutes_count": 0, "knowledge_count": 0, "connected": False}

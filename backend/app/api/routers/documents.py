@@ -1,7 +1,9 @@
 import json
+import asyncio
 import logging
+import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,10 +15,39 @@ from app.models.user import User
 from app.models.document import Document, Template
 from app.schemas.document import DocumentGenerate, DocumentUpdate, DocumentOut, DocumentExport
 from app.services.docgen.engine import get_engine
+from app.services.evidence.ocr import validate_file_type, extract_text
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post("/extract-text")
+async def extract_text_from_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传文件并提取文字内容，供文书生成和法律研究使用。"""
+    if not validate_file_type(file.filename or ""):
+        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOC, DOCX, TXT, XLSX, XLS, PNG, JPG, GIF, WEBP, BMP, TIFF")
+
+    settings = get_settings()
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(400, f"文件大小超过{settings.MAX_UPLOAD_SIZE_MB}MB限制")
+
+    tmp_dir = settings.upload_path / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or ".bin").suffix
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex[:12]}{ext}"
+    await asyncio.to_thread(tmp_path.write_bytes, content)
+
+    try:
+        text = await extract_text(tmp_path)
+    finally:
+        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+
+    return {"filename": file.filename, "text": text}
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -59,6 +90,23 @@ async def generate_document(
     if not template:
         raise HTTPException(400, f"未找到类型为 '{data.type}' 的文书模板，请先创建模板")
 
+    # 查询研究报告作为生成依据
+    research_context = ""
+    if data.research_report_ids:
+        from app.models.research import ResearchReport
+        rr_result = await db.execute(
+            select(ResearchReport).where(
+                ResearchReport.id.in_(data.research_report_ids),
+                ResearchReport.owner_id == current_user.id,
+            )
+        )
+        reports = rr_result.scalars().all()
+        if reports:
+            research_context = "\n\n---\n\n".join(
+                f"【研究报告：{r.query}】\n{r.report[:4000]}"
+                for r in reports
+            )[:8000]
+
     # 调用AI生成引擎（单例）
     engine = get_engine()
     try:
@@ -67,6 +115,7 @@ async def generate_document(
             doc_type=data.type,
             template=template,
             extra_instructions=data.extra_instructions,
+            research_context=research_context or None,
         )
     except RuntimeError as e:
         raise HTTPException(503, str(e))
@@ -164,7 +213,7 @@ async def export_document(
             raise HTTPException(400, str(e))
     elif data.format == "markdown":
         filepath = output_dir / f"{doc.id}_{doc.title}.md"
-        filepath.write_text(doc.content, encoding="utf-8")
+        await asyncio.to_thread(filepath.write_text, doc.content, "utf-8")
         return FileResponse(
             filepath,
             media_type="text/markdown",
