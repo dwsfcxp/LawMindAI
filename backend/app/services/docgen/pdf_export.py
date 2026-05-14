@@ -1,4 +1,4 @@
-"""PDF导出 — 基于HTML转PDF"""
+"""PDF导出 — 基于HTML转PDF（法院标准排版）"""
 
 import asyncio
 import logging
@@ -8,7 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 async def export_to_pdf(doc, output_dir: Path) -> str:
-    """将文书内容导出为PDF文件（通过HTML中转）。"""
+    """将文书内容导出为PDF文件（通过HTML中转）。
+
+    排版参数与Word/HTML导出一致：
+    - 页边距：上37mm 下35mm 左28mm 右26mm
+    - A4纸张
+    """
     from app.services.docgen.html_export import export_to_html
 
     # 先生成HTML
@@ -40,9 +45,12 @@ async def export_to_pdf(doc, output_dir: Path) -> str:
                 'encoding': 'UTF-8',
                 'page-size': 'A4',
                 'margin-top': '37mm',
-                'margin-right': '28mm',
+                'margin-right': '26mm',
                 'margin-bottom': '35mm',
-                'margin-left': '26mm',
+                'margin-left': '28mm',
+                'footer-center': '— [page] —',
+                'footer-font-size': '10',
+                'footer-spacing': '5',
             },
         )
         return str(pdf_path)
@@ -51,7 +59,7 @@ async def export_to_pdf(doc, output_dir: Path) -> str:
     except Exception as e:
         logger.warning(f"pdfkit failed: {e}")
 
-    # 最终备选：返回HTML文件并重命名
+    # 最终备选
     logger.warning("No PDF converter available, returning HTML instead")
     raise RuntimeError("PDF导出需要安装 weasyprint 或 wkhtmltopdf。请运行: pip install weasyprint")
 

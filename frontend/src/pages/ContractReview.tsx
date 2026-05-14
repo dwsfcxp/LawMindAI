@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Trash2, Download, Loader2, ShieldCheck, AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, FileDown } from 'lucide-react';
+import { Upload, FileText, Trash2, Download, Loader2, ShieldCheck, AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, FileDown, PenLine } from 'lucide-react';
 import { contractApi, caseApi, type ContractItem, type ContractRiskItem, type Case as CaseType } from '@/lib/api';
 
 const RISK_COLORS: Record<string, string> = {
@@ -41,7 +41,12 @@ export default function ContractReview() {
   const [showClauses, setShowClauses] = useState(false);
 
   const [form, setForm] = useState({ title: '', case_id: '' });
+  const [showDraft, setShowDraft] = useState(false);
+  const [draftForm, setDraftForm] = useState({ title: '', description: '', case_id: '' });
+  const [draftFile, setDraftFile] = useState<File | null>(null);
+  const [drafting, setDrafting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const draftFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     caseApi.list().then(setCases).catch(console.error);
@@ -103,6 +108,27 @@ export default function ContractReview() {
       if (selectedContract?.id === id) setSelectedContract(null);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleDraft = async () => {
+    if (!draftForm.title.trim() || !draftForm.description.trim()) return;
+    setDrafting(true);
+    try {
+      const result = await contractApi.draft({
+        title: draftForm.title.trim(),
+        description: draftForm.description.trim(),
+        case_id: draftForm.case_id ? Number(draftForm.case_id) : undefined,
+        file: draftFile || undefined,
+      });
+      setContracts((prev) => [result, ...prev]);
+      setShowDraft(false);
+      setDraftForm({ title: '', description: '', case_id: '' });
+      setDraftFile(null);
+    } catch (e: any) {
+      alert(e.response?.data?.detail || '起草失败');
+    } finally {
+      setDrafting(false);
     }
   };
 
@@ -184,14 +210,92 @@ export default function ContractReview() {
           <h1 className="text-2xl font-bold">合同智能审查</h1>
           <p className="text-sm text-muted-foreground mt-1">上传合同文件，AI自动识别条款、标注风险、生成修改建议</p>
         </div>
-        <button
-          onClick={() => setShowUpload(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-        >
-          <Upload className="h-4 w-4" />
-          上传合同
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowDraft(true)}
+            className="flex items-center gap-2 px-4 py-2.5 border border-primary text-primary rounded-lg hover:bg-primary/10 transition-colors"
+          >
+            <PenLine className="h-4 w-4" />
+            起草合同
+          </button>
+          <button
+            onClick={() => setShowUpload(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+          >
+            <Upload className="h-4 w-4" />
+            上传合同
+          </button>
+        </div>
       </div>
+
+      {/* Draft Dialog */}
+      {showDraft && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowDraft(false)}>
+          <div className="bg-card rounded-xl shadow-lg p-6 w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold mb-4">AI 起草合同</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">合同标题 *</label>
+                <input
+                  type="text"
+                  value={draftForm.title}
+                  onChange={(e) => setDraftForm((f) => ({ ...f, title: e.target.value }))}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                  placeholder="例: 软件开发服务合同"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">需求描述 *</label>
+                <textarea
+                  value={draftForm.description}
+                  onChange={(e) => setDraftForm((f) => ({ ...f, description: e.target.value }))}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm min-h-[120px]"
+                  placeholder="描述合同需求，如：甲方委托乙方开发一套ERP系统，工期6个月，总价50万元，分三期支付..."
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">参考文件（可选）</label>
+                <input
+                  ref={draftFileRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.txt,.xlsx,.xls"
+                  className="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                  onChange={(e) => setDraftFile(e.target.files?.[0] || null)}
+                />
+                <p className="text-xs text-muted-foreground mt-1">上传参考合同或相关文件，AI将参考其内容起草</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">关联案件（可选）</label>
+                <select
+                  value={draftForm.case_id}
+                  onChange={(e) => setDraftForm((f) => ({ ...f, case_id: e.target.value }))}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">不关联案件</option>
+                  {cases.map((c) => (
+                    <option key={c.id} value={c.id}>{c.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setShowDraft(false)}
+                  className="px-4 py-2 rounded-lg border hover:bg-accent text-sm"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleDraft}
+                  disabled={drafting || !draftForm.title.trim() || !draftForm.description.trim()}
+                  className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                >
+                  {drafting ? <Loader2 className="h-4 w-4 animate-spin" /> : '起草合同'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Upload Dialog */}
       {showUpload && (
@@ -227,10 +331,10 @@ export default function ContractReview() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,.docx,.doc,.txt,.png,.jpg,.jpeg,.bmp,.tiff"
+                  accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff"
                   className="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
                 />
-                <p className="text-xs text-muted-foreground mt-1">支持 PDF, Word, TXT, 图片格式</p>
+                <p className="text-xs text-muted-foreground mt-1">支持 PDF, Word, Excel, TXT, 图片格式</p>
               </div>
               <div className="flex gap-3 justify-end">
                 <button

@@ -40,6 +40,7 @@ class ConnectivityTestRequest(BaseModel):
     base_url: str
     api_key: str
     model_name: str
+    setting_id: int | None = None
 
 
 class ConnectivityTestResult(BaseModel):

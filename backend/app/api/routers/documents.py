@@ -13,7 +13,7 @@ from app.core.security import get_current_user
 from app.config import get_settings
 from app.models.user import User
 from app.models.document import Document, Template
-from app.schemas.document import DocumentGenerate, DocumentUpdate, DocumentOut, DocumentExport
+from app.schemas.document import DocumentGenerate, DocumentUpdate, DocumentOut, DocumentExport, DocumentBundleGenerate
 from app.services.docgen.engine import get_engine
 from app.services.evidence.ocr import validate_file_type, extract_text
 
@@ -140,6 +140,94 @@ async def generate_document(
     return doc
 
 
+@router.post("/generate-bundle")
+async def generate_document_bundle(
+    data: DocumentBundleGenerate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """多文书集合生成 — 一次性生成多份关联文书并确保一致性。
+
+    支持预设（preset）或自定义文书类型列表（doc_types）。
+    """
+    from app.services.docgen.prompts import BUNDLE_PRESETS
+
+    # 验证参数
+    if not data.preset and not data.doc_types:
+        raise HTTPException(400, "请指定 preset（预设名称）或 doc_types（文书类型列表）")
+
+    if data.preset and data.preset not in BUNDLE_PRESETS:
+        available = ", ".join(BUNDLE_PRESETS.keys())
+        raise HTTPException(400, f"未知预设 '{data.preset}'，可用预设: {available}")
+
+    # 查询研究报告作为生成依据
+    research_context = ""
+    if data.research_report_ids:
+        from app.models.research import ResearchReport
+        rr_result = await db.execute(
+            select(ResearchReport).where(
+                ResearchReport.id.in_(data.research_report_ids),
+                ResearchReport.owner_id == current_user.id,
+            )
+        )
+        reports = rr_result.scalars().all()
+        if reports:
+            research_context = "\n\n---\n\n".join(
+                f"【研究报告：{r.query}】\n{r.report[:4000]}"
+                for r in reports
+            )[:8000]
+
+    # 调用引擎生成集合
+    engine = get_engine()
+    try:
+        bundle_result = await engine.generate_bundle(
+            case_facts=data.case_facts,
+            doc_types=data.doc_types or [],
+            preset=data.preset,
+            extra_instructions=data.extra_instructions,
+            research_context=research_context or None,
+        )
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logger.exception(f"Bundle generation failed: {e}")
+        raise HTTPException(500, f"文书集合生成失败: {str(e)[:200]}")
+
+    # 保存所有文书到数据库
+    saved_docs = []
+    for doc_data in bundle_result.get("documents", []):
+        doc = Document(
+            case_id=data.case_id,
+            type=doc_data["doc_type"],
+            title=doc_data.get("title", doc_data["doc_type"]),
+            content=doc_data.get("content", ""),
+            ai_metadata=doc_data.get("metadata", {}),
+            status="generated",
+            owner_id=current_user.id,
+        )
+        db.add(doc)
+        saved_docs.append(doc)
+
+    await db.flush()
+    for doc in saved_docs:
+        await db.refresh(doc)
+
+    return {
+        "documents": [
+            {
+                "id": doc.id,
+                "type": doc.type,
+                "title": doc.title,
+                "status": doc.status,
+                "created_at": doc.created_at.isoformat(),
+            }
+            for doc in saved_docs
+        ],
+        "consistency_check": bundle_result.get("consistency_check", {}),
+        "total": len(saved_docs),
+    }
+
+
 @router.get("/{doc_id}", response_model=DocumentOut)
 async def get_document(
     doc_id: int,
@@ -259,3 +347,30 @@ async def verify_document_laws(
     engine = get_engine()
     results = await engine.verify_laws_in_content(doc.content)
     return {"document_id": doc_id, "verification_results": results, "total": len(results)}
+
+
+@router.post("/{doc_id}/quality-check")
+async def quality_check_document(
+    doc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """文书质量核查 — 自动化验证文书质量（法条、金额、逻辑、格式、要素完整性）"""
+    doc = await db.get(Document, doc_id)
+    if not doc or doc.owner_id != current_user.id:
+        raise HTTPException(404, "文书不存在")
+
+    engine = get_engine()
+    parsed_case = None
+    if doc.ai_metadata and isinstance(doc.ai_metadata, dict):
+        parsed_case = doc.ai_metadata.get("parsed_case")
+
+    try:
+        check_result = await engine.quality_check(doc.content, doc.type, parsed_case)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logger.exception(f"Quality check failed: {e}")
+        raise HTTPException(500, f"质量核查失败: {str(e)[:200]}")
+
+    return {"document_id": doc_id, "quality_check": check_result}

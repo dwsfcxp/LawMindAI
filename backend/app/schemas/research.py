@@ -19,3 +19,7 @@ class ResearchReportOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ResearchExport(BaseModel):
+    format: str = "docx"  # docx / markdown

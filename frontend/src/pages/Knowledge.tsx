@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BookOpen, Plus, Trash2, Loader2, Tag, Search, FileText, X } from 'lucide-react';
+import { BookOpen, Plus, Trash2, Loader2, Tag, Search, FileText, X, Upload } from 'lucide-react';
 import { knowledgeApi, type KnowledgeItem, type KnowledgeStats } from '@/lib/api';
 
 export default function Knowledge() {
@@ -10,6 +10,7 @@ export default function Knowledge() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterTag, setFilterTag] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [uploading, setUploading] = useState(false);
 
   const [form, setForm] = useState({ title: '', content: '', source: '', tags: '' });
 
@@ -45,6 +46,21 @@ export default function Knowledge() {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      await knowledgeApi.uploadFile(file);
+      loadData();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || '上传失败');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
   const handleDelete = async (id: number) => {
     if (!confirm('确定删除此知识条目？')) return;
     await knowledgeApi.delete(id);
@@ -65,10 +81,23 @@ export default function Knowledge() {
           <h1 className="text-2xl font-bold">知识库管理</h1>
           <p className="text-sm text-muted-foreground mt-1">管理法律知识、文书模板、办案笔记，构建个人/团队知识库</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 text-sm">
-          <Plus className="h-4 w-4" /> 添加知识
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 text-sm">
+            <Plus className="h-4 w-4" /> 添加知识
+          </button>
+          <label className="flex items-center gap-2 px-4 py-2.5 border border-primary text-primary rounded-lg hover:bg-primary/10 text-sm cursor-pointer">
+            <input
+              type="file"
+              accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={uploading}
+            />
+            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            {uploading ? '处理中...' : '上传文件'}
+          </label>
+        </div>
       </div>
 
       {/* Stats */}

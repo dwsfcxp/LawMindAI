@@ -9,13 +9,15 @@ import {
   CheckCircle2,
   Loader2,
   ChevronDown,
+  ChevronRight,
   Plus,
   X,
   RotateCcw,
   Shield,
+  Upload,
 } from 'lucide-react';
-import { documentApi, caseApi } from '@/lib/api';
-import type { Document, Case, CaseCreate } from '@/lib/api';
+import { documentApi, caseApi, researchApi } from '@/lib/api';
+import type { Document, Case, CaseCreate, ResearchReport } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const DOC_TYPES = [
@@ -61,6 +63,12 @@ export default function DocumentGenerate() {
     description: '',
   });
   const [creatingCase, setCreatingCase] = useState(false);
+  const [extractingFile, setExtractingFile] = useState(false);
+
+  // 研究报告选择
+  const [researchReports, setResearchReports] = useState<ResearchReport[]>([]);
+  const [selectedReportIds, setSelectedReportIds] = useState<number[]>([]);
+  const [showReportPicker, setShowReportPicker] = useState(false);
 
   // Progress steps
   const [progressStep, setProgressStep] = useState(0);
@@ -74,6 +82,7 @@ export default function DocumentGenerate() {
 
   useEffect(() => {
     caseApi.list({ limit: 100 }).then((data) => setCases(data)).catch(() => {});
+    researchApi.list().then(setResearchReports).catch(() => {});
   }, []);
 
   const startProgressSimulation = useCallback(() => {
@@ -108,6 +117,7 @@ export default function DocumentGenerate() {
         case_id: selectedCaseId ? Number(selectedCaseId) : undefined,
         case_facts: caseFacts.trim(),
         extra_instructions: extraInstructions.trim() || undefined,
+        research_report_ids: selectedReportIds.length > 0 ? selectedReportIds : undefined,
       });
       setGeneratedDoc(doc);
       setEditedContent(doc.content);
@@ -226,6 +236,27 @@ export default function DocumentGenerate() {
     setReviewResult(null);
     setEditMode(false);
     setError('');
+    setSelectedReportIds([]);
+    setShowReportPicker(false);
+  };
+
+  const handleFileExtract = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setExtractingFile(true);
+    try {
+      const result = await documentApi.extractText(file);
+      if (result.text && !result.text.startsWith('[')) {
+        setCaseFacts((prev) => (prev ? prev + '\n\n' + result.text : result.text));
+      } else {
+        setError(result.text || '文件文字提取失败');
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || '文件上传失败');
+    } finally {
+      setExtractingFile(false);
+      e.target.value = '';
+    }
   };
 
   const selectedDocLabel = DOC_TYPES.find((d) => d.value === docType)?.label || '';
@@ -321,15 +352,28 @@ export default function DocumentGenerate() {
 
             {/* Case Facts */}
             <div>
-              <label className="mb-1.5 block text-sm font-medium">
-                案情描述 <span className="text-red-500">*</span>
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-sm font-medium">
+                  案情描述 <span className="text-red-500">*</span>
+                </label>
+                <label className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium cursor-pointer hover:bg-accent transition-colors">
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma"
+                    className="hidden"
+                    onChange={handleFileExtract}
+                    disabled={extractingFile || loading}
+                  />
+                  {extractingFile ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  {extractingFile ? '提取中...' : '上传文件提取文字'}
+                </label>
+              </div>
               <textarea
                 value={caseFacts}
                 onChange={(e) => setCaseFacts(e.target.value)}
                 required
                 disabled={loading}
-                placeholder="请用自然语言详细描述案件事实，包括当事人信息、纠纷经过、争议焦点等。例如：&#10;&#10;原告张三于2024年1月15日借给被告李四人民币10万元，约定还款日期为2024年6月30日，月利率为0.5%。到期后李四拒绝还款..."
+                placeholder="请用自然语言详细描述案件事实，包括当事人信息、纠纷经过、争议焦点等。也可以点击右上角「上传文件提取文字」按钮，从文件中自动提取。&#10;&#10;例如：原告张三于2024年1月15日借给被告李四人民币10万元，约定还款日期为2024年6月30日，月利率为0.5%。到期后李四拒绝还款..."
                 rows={8}
                 className="w-full rounded-lg border border-input bg-background px-3.5 py-2.5 text-sm leading-relaxed placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:opacity-50"
               />
@@ -337,6 +381,43 @@ export default function DocumentGenerate() {
                 描述越详细，生成的文书越准确。建议包含当事人、时间、地点、事件经过、争议焦点等要素。
               </p>
             </div>
+
+            {/* Research Report References */}
+            {researchReports.length > 0 && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">
+                  研究报告依据
+                  <span className="ml-1 text-xs text-muted-foreground">（可选）</span>
+                </label>
+                <div className="rounded-lg border p-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowReportPicker(!showReportPicker)}
+                    className="flex items-center gap-1 text-xs font-medium w-full"
+                  >
+                    {showReportPicker ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                    选择研究报告 {selectedReportIds.length > 0 ? `（已选${selectedReportIds.length}篇）` : `（${researchReports.length}篇可用）`}
+                  </button>
+                  {showReportPicker && (
+                    <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                      {researchReports.map(r => (
+                        <label key={r.id} className="flex items-start gap-2 text-xs p-1 rounded hover:bg-accent cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedReportIds.includes(r.id)}
+                            onChange={() => setSelectedReportIds(prev =>
+                              prev.includes(r.id) ? prev.filter(id => id !== r.id) : [...prev, r.id]
+                            )}
+                            className="mt-0.5"
+                          />
+                          <span className="truncate">{r.query.slice(0, 60)} ({new Date(r.created_at).toLocaleDateString()})</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Extra Instructions */}
             <div>

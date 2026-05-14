@@ -46,8 +46,19 @@ class DocumentGenerate(BaseModel):
     type: str
     title: str | None = None
     case_facts: str
-    # 自然语言案情描述
     extra_instructions: str | None = None
+    research_report_ids: list[int] | None = None
+
+
+class DocumentBundleGenerate(BaseModel):
+    """多文书集合生成请求"""
+    case_id: int | None = None
+    doc_types: list[str] | None = None
+    preset: str | None = None       # 预设名称（如 civil_litigation_full）
+    title: str | None = None
+    case_facts: str
+    extra_instructions: str | None = None
+    research_report_ids: list[int] | None = None
 
 
 class DocumentUpdate(BaseModel):

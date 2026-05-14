@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const apiClient = axios.create({
+export const apiClient = axios.create({
   baseURL: '/api/v1',
   timeout: 180000,
   headers: {
@@ -188,9 +188,20 @@ export const documentApi = {
     case_id?: number;
     template_id?: number;
     extra_instructions?: string;
+    research_report_ids?: number[];
   }): Promise<Document> => {
     const res = await apiClient.post('/documents/generate', data, {
       timeout: 300000,
+    });
+    return res.data;
+  },
+
+  extractText: async (file: File): Promise<{ filename: string; text: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await apiClient.post('/documents/extract-text', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
     });
     return res.data;
   },
@@ -356,7 +367,9 @@ export const evidenceApi = {
     const a = document.createElement('a');
     a.href = url;
     a.download = `evidence_${id}`;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     window.URL.revokeObjectURL(url);
   },
 };
@@ -420,6 +433,7 @@ export const llmSettingsApi = {
     base_url: string;
     api_key: string;
     model_name: string;
+    setting_id?: number;
   }): Promise<ConnectivityTestResult> => {
     const res = await apiClient.post('/llm-settings/test-connectivity', data);
     return res.data;
@@ -460,6 +474,20 @@ export const researchApi = {
   delete: async (id: number): Promise<void> => {
     await apiClient.delete(`/research/${id}`);
   },
+
+  exportWord: async (id: number): Promise<Blob> => {
+    const res = await apiClient.post(`/research/${id}/export`, { format: 'docx' }, {
+      responseType: 'blob',
+    });
+    return res.data;
+  },
+
+  exportMarkdown: async (id: number): Promise<Blob> => {
+    const res = await apiClient.post(`/research/${id}/export`, { format: 'markdown' }, {
+      responseType: 'blob',
+    });
+    return res.data;
+  },
 };
 
 // ── Vector API ────────────────────────────────────────────────────────
@@ -467,6 +495,7 @@ export const researchApi = {
 export interface VectorStats {
   cases_count: number;
   statutes_count: number;
+  knowledge_count: number;
   connected: boolean;
 }
 
@@ -524,6 +553,24 @@ export interface ContractRiskItem {
 export const contractApi = {
   list: async (caseId?: number): Promise<ContractItem[]> => {
     const res = await apiClient.get('/contracts', { params: { case_id: caseId } });
+    return res.data;
+  },
+
+  draft: async (data: {
+    title: string;
+    description: string;
+    case_id?: number;
+    file?: File;
+  }): Promise<ContractItem> => {
+    const formData = new FormData();
+    formData.append('title', data.title);
+    formData.append('description', data.description);
+    if (data.case_id) formData.append('case_id', String(data.case_id));
+    if (data.file) formData.append('file', data.file);
+    const res = await apiClient.post('/contracts/draft', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000,
+    });
     return res.data;
   },
 
@@ -618,6 +665,16 @@ export const knowledgeApi = {
     return res.data;
   },
 
+  uploadFile: async (file: File): Promise<KnowledgeItem> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await apiClient.post('/knowledge/upload-file', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    });
+    return res.data;
+  },
+
   get: async (id: number): Promise<KnowledgeItem> => {
     const res = await apiClient.get(`/knowledge/${id}`);
     return res.data;
@@ -639,6 +696,122 @@ export const knowledgeApi = {
 
   stats: async (): Promise<KnowledgeStats> => {
     const res = await apiClient.get('/knowledge/stats');
+    return res.data;
+  },
+};
+
+// ── External API Config API ──────────────────────────────────────────────
+
+export interface ExternalApiConfig {
+  id: number;
+  name: string;
+  description: string;
+  base_url: string;
+  auth_type: string;
+  auth_token_masked: string;
+  auth_header_name: string;
+  auth_username: string;
+  auth_password_masked: string;
+  custom_headers: string;
+  search_law_path: string;
+  search_law_method: string;
+  search_case_path: string;
+  search_case_method: string;
+  get_provision_path: string;
+  get_provision_method: string;
+  health_check_path: string;
+  response_mapping: string;
+  request_template: string;
+  is_enabled: boolean;
+  category: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalApiPreset {
+  key: string;
+  name: string;
+  category: string;
+  description: string;
+  base_url: string;
+  auth_type: string;
+  search_law_path: string;
+  search_law_method: string;
+  search_case_path: string;
+  search_case_method: string;
+  get_provision_path: string;
+  get_provision_method: string;
+  health_check_path: string;
+  response_mapping: string;
+  request_template: string;
+}
+
+export const externalApiConfigApi = {
+  list: async (): Promise<ExternalApiConfig[]> => {
+    const res = await apiClient.get('/external-apis');
+    return res.data;
+  },
+
+  create: async (data: any): Promise<ExternalApiConfig> => {
+    const res = await apiClient.post('/external-apis', data);
+    return res.data;
+  },
+
+  update: async (id: number, data: any): Promise<ExternalApiConfig> => {
+    const res = await apiClient.put(`/external-apis/${id}`, data);
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/external-apis/${id}`);
+  },
+
+  toggle: async (id: number): Promise<ExternalApiConfig> => {
+    const res = await apiClient.post(`/external-apis/${id}/toggle`);
+    return res.data;
+  },
+
+  test: async (id: number): Promise<{ success: boolean; message: string; latency_ms: number }> => {
+    const res = await apiClient.post(`/external-apis/test?api_id=${id}`);
+    return res.data;
+  },
+
+  presets: async (): Promise<ExternalApiPreset[]> => {
+    const res = await apiClient.get('/external-apis/presets');
+    return res.data;
+  },
+};
+
+// ── App Config API ──────────────────────────────────────────────────────
+
+export interface AppConfigItem {
+  id: number;
+  config_key: string;
+  config_value: string;
+  description: string;
+  category: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const appConfigApi = {
+  list: async (category?: string): Promise<AppConfigItem[]> => {
+    const res = await apiClient.get('/app-config', { params: { category } });
+    return res.data;
+  },
+
+  update: async (id: number, data: { config_value?: string; description?: string }): Promise<AppConfigItem> => {
+    const res = await apiClient.put(`/app-config/${id}`, data);
+    return res.data;
+  },
+
+  batchUpdate: async (items: { config_key: string; config_value: string }[]): Promise<AppConfigItem[]> => {
+    const res = await apiClient.post('/app-config/batch-update', items);
+    return res.data;
+  },
+
+  resetVectorConnection: async (): Promise<{ message: string }> => {
+    const res = await apiClient.post('/app-config/reset-vector-connection');
     return res.data;
   },
 };

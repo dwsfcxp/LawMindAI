@@ -9,6 +9,7 @@ const TYPE_LABELS: Record<string, string> = {
   electronic: '电子数据',
   testimony: '证人证言',
   audio_visual: '视听资料',
+  audio: '音频证据',
   expert: '鉴定意见',
 };
 
@@ -18,6 +19,7 @@ const TYPE_COLORS: Record<string, string> = {
   electronic: 'bg-green-100 text-green-700',
   testimony: 'bg-purple-100 text-purple-700',
   audio_visual: 'bg-pink-100 text-pink-700',
+  audio: 'bg-cyan-100 text-cyan-700',
   expert: 'bg-red-100 text-red-700',
 };
 
@@ -93,8 +95,10 @@ export default function Evidence() {
 
   const handleDelete = async (id: number) => {
     if (!confirm('确定删除此证据？')) return;
-    await evidenceApi.delete(id);
-    loadEvidence();
+    try {
+      await evidenceApi.delete(id);
+      loadEvidence();
+    } catch (e) { alert('删除失败'); }
   };
 
   const handleChainAnalysis = async () => {
@@ -122,7 +126,7 @@ export default function Evidence() {
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <input type="file" ref={fileInputRef} className="hidden" onChange={onFileSelected}
-        accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.bmp,.tiff" />
+        accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma" />
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
