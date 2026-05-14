@@ -1,9 +1,24 @@
-"""快速种子模板脚本"""
+"""快速种子模板脚本 — 支持 SQLite / PostgreSQL，幂等可重复运行。"""
+
 import asyncio
 import json
-from datetime import datetime
+import os
+import sys
+from datetime import datetime, timezone
+
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
+
+# ---------------------------------------------------------------------------
+# Resolve database URL — honour environment variable, fall back to app config.
+# ---------------------------------------------------------------------------
+_db_url = os.getenv("DATABASE_URL")
+if not _db_url:
+    try:
+        from app.config import get_settings
+        _db_url = get_settings().DATABASE_URL
+    except Exception:
+        _db_url = "sqlite+aiosqlite:///./lawmind.db"
 
 TEMPLATES = [
     {"name": "民事起诉状", "type": "complaint",
@@ -62,35 +77,59 @@ TEMPLATES = [
      "variables": []},
 ]
 
+
 async def seed():
-    engine = create_async_engine("sqlite+aiosqlite:///./lawmind.db")
+    engine = create_async_engine(_db_url)
+    is_sqlite = "sqlite" in _db_url
+
     async with engine.begin() as conn:
+        # Ensure all tables exist (idempotent with create_all).
+        try:
+            from app.core.database import Base
+            import app.models  # noqa: F401
+            await conn.run_sync(Base.metadata.create_all)
+        except Exception as e:
+            print(f"  Warning: could not run create_all ({e}), continuing...")
+
+        inserted = 0
+        skipped = 0
+
         for t in TEMPLATES:
-            existing = await conn.execute(
-                text("SELECT id FROM templates WHERE type = :type"),
-                {"type": t["type"]}
-            )
-            if existing.fetchone():
-                print(f"  Skip: {t['name']} (exists)")
-                continue
-            now = datetime.utcnow().isoformat()
-            await conn.execute(text(
-                "INSERT INTO templates (name, type, description, structure, ai_prompt, format_rules, variables, is_public, created_at, updated_at) "
-                "VALUES (:name, :type, :description, :structure, :ai_prompt, :format_rules, :variables, 1, :created_at, :updated_at)"
-            ), {
-                "name": t["name"],
-                "type": t["type"],
-                "description": t["description"],
-                "structure": json.dumps(t["structure"], ensure_ascii=False),
-                "ai_prompt": t["ai_prompt"],
-                "format_rules": json.dumps(t["format_rules"], ensure_ascii=False),
-                "variables": json.dumps(t["variables"], ensure_ascii=False),
-                "created_at": now,
-                "updated_at": now,
-            })
-            print(f"  Added: {t['name']}")
+            try:
+                existing = await conn.execute(
+                    text("SELECT id FROM templates WHERE type = :type"),
+                    {"type": t["type"]},
+                )
+                if existing.fetchone():
+                    print(f"  Skip: {t['name']} (exists)")
+                    skipped += 1
+                    continue
+
+                now = datetime.now(timezone.utc).isoformat()
+                await conn.execute(text(
+                    "INSERT INTO templates "
+                    "(name, type, description, structure, ai_prompt, format_rules, variables, is_public, created_at, updated_at) "
+                    "VALUES (:name, :type, :description, :structure, :ai_prompt, :format_rules, :variables, 1, :created_at, :updated_at)"
+                ), {
+                    "name": t["name"],
+                    "type": t["type"],
+                    "description": t["description"],
+                    "structure": json.dumps(t["structure"], ensure_ascii=False),
+                    "ai_prompt": t["ai_prompt"],
+                    "format_rules": json.dumps(t["format_rules"], ensure_ascii=False),
+                    "variables": json.dumps(t["variables"], ensure_ascii=False),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                print(f"  Added: {t['name']}")
+                inserted += 1
+            except Exception as e:
+                print(f"  Error inserting {t['name']}: {e}")
+                skipped += 1
+
     await engine.dispose()
-    print("Done!")
+    print(f"Done! Inserted: {inserted}, Skipped: {skipped}, Total: {len(TEMPLATES)}")
+
 
 if __name__ == "__main__":
     asyncio.run(seed())

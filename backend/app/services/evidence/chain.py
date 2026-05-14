@@ -1,11 +1,21 @@
 """证据链分析服务 — 分析案件证据完整性，识别缺失环节"""
 
+import asyncio
 import json
 import logging
 from app.services.llm_client import create_llm_client_from_settings
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Timeout for LLM calls in seconds.
+_LLM_TIMEOUT = 180
+
+# Maximum response length (safety cap).
+_MAX_RESPONSE_LENGTH = 32000
+
+# Maximum number of evidence items to include in prompt.
+_MAX_EVIDENCE_ITEMS = 50
 
 
 async def analyze_evidence_chain(
@@ -17,12 +27,26 @@ async def analyze_evidence_chain(
     evidence_list: [{id, title, type, ocr_text, analysis, tags}]
     返回: {chain_report, completeness_score, missing_evidence, timeline}
     """
+    # Guard: empty evidence list — return a minimal report.
+    if not evidence_list:
+        return {
+            "chain_report": "# 证据链分析报告\n\n**完整度**: 0/100 — 无证据\n\n当前案件尚未录入任何证据材料，无法进行证据链分析。请先上传并录入证据。",
+            "completeness_score": 0,
+            "chain_status": "无证据",
+            "missing_evidence": [],
+        }
+
+    # Guard: empty case description.
+    if not case_description or not case_description.strip():
+        case_description = "（未提供案件描述）"
+
     settings = get_settings()
     client = create_llm_client_from_settings(settings)
     model = settings.CLAUDE_MODEL
 
+    # Build evidence summary, truncating per-item text.
     evidence_summary = []
-    for ev in evidence_list:
+    for ev in evidence_list[:_MAX_EVIDENCE_ITEMS]:
         text_preview = (ev.get("ocr_text") or "")[:500]
         analysis_preview = (ev.get("analysis") or "")[:300]
         evidence_summary.append({
@@ -69,19 +93,37 @@ async def analyze_evidence_chain(
 
 请直接返回JSON，不要包含其他文字。"""
 
+    raw = ""
     try:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=_LLM_TIMEOUT,
         )
         raw = response.content[0].text.strip()
+        # Safety cap.
+        if len(raw) > _MAX_RESPONSE_LENGTH:
+            raw = raw[:_MAX_RESPONSE_LENGTH]
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(raw)
+    except asyncio.TimeoutError:
+        logger.warning("Evidence chain analysis timed out after %ds", _LLM_TIMEOUT)
+        result = {
+            "completeness_score": None,
+            "chain_status": "分析超时",
+            "facts_to_prove": [],
+            "contradictions": [],
+            "missing_evidence": [],
+            "suggested_order": [],
+            "summary": f"证据链分析超时（{_LLM_TIMEOUT}秒），请稍后重试。",
+        }
     except json.JSONDecodeError as e:
         logger.warning(f"Evidence chain analysis JSON parse failed: {e}")
-        raw_text = raw if 'raw' in dir() else ""
+        raw_text = raw[:500] if raw else ""
         result = {
             "completeness_score": None,
             "chain_status": "分析失败",
@@ -89,15 +131,10 @@ async def analyze_evidence_chain(
             "contradictions": [],
             "missing_evidence": [],
             "suggested_order": [],
-            "summary": f"证据链分析结果解析失败。{raw_text[:500]}" if raw_text else "证据链分析服务暂时不可用。",
+            "summary": f"证据链分析结果解析失败。{raw_text}" if raw_text else "证据链分析服务暂时不可用。",
         }
     except Exception as e:
         logger.warning(f"Evidence chain analysis failed: {e}")
-        raw_text = ""
-        try:
-            raw_text = response.content[0].text
-        except Exception:
-            pass
         result = {
             "completeness_score": None,
             "chain_status": "分析失败",
@@ -105,7 +142,7 @@ async def analyze_evidence_chain(
             "contradictions": [],
             "missing_evidence": [],
             "suggested_order": [],
-            "summary": f"证据链分析失败。{raw_text[:500]}" if raw_text else "证据链分析服务暂时不可用。",
+            "summary": f"证据链分析失败: {e}",
         }
 
     # Build readable report
@@ -125,9 +162,15 @@ async def generate_cross_examination(
     our_side: str = "被告",
 ) -> str:
     """为对方证据生成质证意见"""
+    # Guard: empty evidence text.
+    if not evidence_text or not evidence_text.strip():
+        return "无法生成质证意见：证据内容为空"
+
     settings = get_settings()
     client = create_llm_client_from_settings(settings)
     model = settings.CLAUDE_MODEL
+
+    effective_context = case_context[:3000] if case_context else "未提供案件背景"
 
     prompt = f"""你是一位资深诉讼律师，{our_side}方代理人。请针对以下对方提交的证据，从真实性、合法性、关联性三个维度撰写质证意见。
 
@@ -137,7 +180,7 @@ async def generate_cross_examination(
 {evidence_text[:8000]}
 
 ## 案件背景
-{case_context[:3000] or '未提供案件背景'}
+{effective_context}
 
 ## 质证要求
 
@@ -150,13 +193,22 @@ async def generate_cross_examination(
 请输出完整的质证意见，语言专业有力，适当引用法条。"""
 
     try:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system="你是一位资深中国执业律师，擅长证据质证和法庭辩论。",
-            messages=[{"role": "user", "content": prompt}],
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=model,
+                max_tokens=4096,
+                system="你是一位资深中国执业律师，擅长证据质证和法庭辩论。",
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=_LLM_TIMEOUT,
         )
-        return response.content[0].text if response.content else "质证意见生成失败"
+        result = response.content[0].text if response.content else "质证意见生成失败"
+        if len(result) > _MAX_RESPONSE_LENGTH:
+            result = result[:_MAX_RESPONSE_LENGTH] + "\n\n[... 结果过长，已截断]"
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("Cross-examination generation timed out")
+        return "质证意见生成超时，请稍后重试。"
     except Exception as e:
         logger.warning(f"Cross-examination generation failed: {e}")
         return "质证意见生成失败，请稍后重试。"

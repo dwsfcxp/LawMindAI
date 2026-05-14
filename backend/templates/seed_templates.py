@@ -4,28 +4,37 @@ Seed default document templates into the database.
 Usage:
     python -m templates.seed_templates
 
-Requires DATABASE_URL_SYNC environment variable or falls back to the
-default synchronous PostgreSQL connection string defined in app config.
+Supports both SQLite and PostgreSQL.  Honour DATABASE_URL_SYNC /
+DATABASE_URL environment variables, falling back to the app config.
 """
 
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 # ---------------------------------------------------------------------------
-# Database connection
+# Database connection — resolve URL from env / app config
 # ---------------------------------------------------------------------------
 
-SYNC_URL = os.getenv(
-    "DATABASE_URL_SYNC",
-    "postgresql://lawmind:lawmind123@localhost:5432/lawmind",
-)
+SYNC_URL = os.getenv("DATABASE_URL_SYNC") or os.getenv("DATABASE_URL")
+if not SYNC_URL:
+    try:
+        from app.config import get_settings
+        SYNC_URL = get_settings().DATABASE_URL_SYNC
+    except Exception:
+        SYNC_URL = "sqlite:///./lawmind.db"
+
+# Strip async driver suffixes for synchronous SQLAlchemy.
+SYNC_URL = SYNC_URL.replace("+aiosqlite", "").replace("+asyncpg", "")
 
 engine = create_engine(SYNC_URL, echo=False)
+
+# Detect dialect for SQL compatibility.
+_is_sqlite = "sqlite" in SYNC_URL
 
 # ---------------------------------------------------------------------------
 # Template definitions
@@ -998,43 +1007,61 @@ ALL_TEMPLATES = [
 
 INSERT_SQL = text("""
     INSERT INTO templates (name, type, description, structure, ai_prompt, format_rules, variables, is_public, created_at, updated_at)
-    VALUES (:name, :type, :description, :structure, :ai_prompt, :format_rules, :variables, TRUE, NOW(), NOW())
-    ON CONFLICT DO NOTHING
+    VALUES (:name, :type, :description, :structure, :ai_prompt, :format_rules, :variables, TRUE, :created_at, :updated_at)
 """)
 
 
 def seed_templates() -> None:
-    """Insert all default templates into the database, skipping any that already exist."""
+    """Insert all default templates into the database, skipping any that already exist.
+
+    Idempotent — safe to run multiple times.  Uses explicit SELECT-before-INSERT
+    rather than ON CONFLICT so it works with both SQLite and PostgreSQL.
+    """
+    # Ensure tables exist first (idempotent).
+    try:
+        from app.core.database import Base
+        import app.models  # noqa: F401
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        print(f"  Warning: could not auto-create tables ({e}), continuing...")
+
     inserted = 0
     skipped = 0
+    now = datetime.now(timezone.utc).isoformat()
 
     with Session(engine) as session:
         for tpl in ALL_TEMPLATES:
-            # Check if template already exists by type
-            existing = session.execute(
-                text("SELECT id FROM templates WHERE type = :type"),
-                {"type": tpl["type"]},
-            ).scalar_one_or_none()
+            try:
+                # Check if template already exists by type
+                existing = session.execute(
+                    text("SELECT id FROM templates WHERE type = :type"),
+                    {"type": tpl["type"]},
+                ).scalar_one_or_none()
 
-            if existing is not None:
-                print(f"  [skip] {tpl['name']} ({tpl['type']}) -- already exists (id={existing})")
+                if existing is not None:
+                    print(f"  [skip] {tpl['name']} ({tpl['type']}) -- already exists (id={existing})")
+                    skipped += 1
+                    continue
+
+                session.execute(
+                    INSERT_SQL,
+                    {
+                        "name": tpl["name"],
+                        "type": tpl["type"],
+                        "description": tpl["description"],
+                        "structure": json.dumps(tpl["structure"], ensure_ascii=False),
+                        "ai_prompt": tpl["ai_prompt"],
+                        "format_rules": json.dumps(tpl["format_rules"], ensure_ascii=False),
+                        "variables": json.dumps(tpl["variables"], ensure_ascii=False),
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                print(f"  [inserted] {tpl['name']} ({tpl['type']})")
+                inserted += 1
+            except Exception as e:
+                print(f"  [error] {tpl['name']} ({tpl['type']}): {e}")
                 skipped += 1
-                continue
-
-            session.execute(
-                INSERT_SQL,
-                {
-                    "name": tpl["name"],
-                    "type": tpl["type"],
-                    "description": tpl["description"],
-                    "structure": json.dumps(tpl["structure"], ensure_ascii=False),
-                    "ai_prompt": tpl["ai_prompt"],
-                    "format_rules": json.dumps(tpl["format_rules"], ensure_ascii=False),
-                    "variables": json.dumps(tpl["variables"], ensure_ascii=False),
-                },
-            )
-            print(f"  [inserted] {tpl['name']} ({tpl['type']})")
-            inserted += 1
 
         session.commit()
 
