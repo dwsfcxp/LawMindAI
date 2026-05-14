@@ -1,6 +1,5 @@
 import re
 import time
-import mimetypes
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone

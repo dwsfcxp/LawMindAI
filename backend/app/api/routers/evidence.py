@@ -10,13 +10,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, validate_upload, sanitize_filename
+from app.core.security import get_current_user, validate_upload
 from app.config import get_settings
 from app.models.user import User
 from app.models.case import Case
 from app.models.evidence import Evidence
 from app.schemas.evidence import EvidenceCreate, EvidenceUpdate, EvidenceOut
-from app.services.evidence.ocr import validate_file_type, extract_text
+from app.services.evidence.ocr import extract_text
 from app.services.evidence.analysis import analyze_evidence
 from app.services.evidence.chain import analyze_evidence_chain, generate_cross_examination
 

@@ -1,7 +1,7 @@
 """应用配置模型 — 向量数据库路径、系统参数等"""
 
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Text, Index
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 

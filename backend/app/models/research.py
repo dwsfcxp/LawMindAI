@@ -1,7 +1,7 @@
 """法律研究报告模型"""
 
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, JSON, Index
+from sqlalchemy import Integer, DateTime, ForeignKey, Text, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 

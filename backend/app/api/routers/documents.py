@@ -1,10 +1,7 @@
-import json
 import asyncio
 import logging
 import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -18,7 +15,7 @@ from app.models.user import User
 from app.models.document import Document, Template
 from app.schemas.document import DocumentGenerate, DocumentUpdate, DocumentOut, DocumentExport, DocumentBundleGenerate
 from app.services.docgen.engine import get_engine
-from app.services.evidence.ocr import validate_file_type, extract_text
+from app.services.evidence.ocr import extract_text
 
 logger = logging.getLogger(__name__)
 

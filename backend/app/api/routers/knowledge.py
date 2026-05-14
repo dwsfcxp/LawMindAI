@@ -20,7 +20,7 @@ from app.config import get_settings
 from app.models.user import User
 from app.models.knowledge import KnowledgeItem
 from app.schemas.knowledge import KnowledgeCreate, KnowledgeUpdate, KnowledgeOut
-from app.services.evidence.ocr import validate_file_type, extract_text
+from app.services.evidence.ocr import extract_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

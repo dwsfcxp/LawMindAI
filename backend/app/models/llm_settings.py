@@ -1,7 +1,7 @@
 """LLM配置模型"""
 
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Text, Index
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 

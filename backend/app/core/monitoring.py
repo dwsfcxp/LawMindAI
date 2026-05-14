@@ -7,7 +7,6 @@ Provides:
 - Memory usage monitoring
 """
 
-import asyncio
 import functools
 import logging
 import time

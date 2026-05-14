@@ -11,13 +11,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, validate_upload, sanitize_filename
+from app.core.security import get_current_user, validate_upload
 from app.config import get_settings
 from app.models.user import User
 from app.models.case import Case
 from app.models.contract import Contract
 from app.schemas.contract import ContractOut, ReviewReportExport
-from app.services.contract.parser import validate_contract_file, parse_contract_document
+from app.services.contract.parser import parse_contract_document
 from app.services.contract.engine import review_contract
 
 logger = logging.getLogger(__name__)

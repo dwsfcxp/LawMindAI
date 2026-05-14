@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, JSON, Index
+from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
