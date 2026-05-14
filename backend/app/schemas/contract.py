@@ -1,12 +1,8 @@
 """合同审查 Schema"""
 
 from datetime import datetime
-from pydantic import BaseModel
-
-
-class ContractUpload(BaseModel):
-    title: str
-    case_id: int | None = None
+from typing import Literal
+from pydantic import BaseModel, model_validator
 
 
 class ContractOut(BaseModel):
@@ -14,7 +10,6 @@ class ContractOut(BaseModel):
     case_id: int | None = None
     owner_id: int
     title: str
-    file_path: str | None = None
     file_type: str | None = None
     parsed_text: str | None = None
     clauses: list[dict] | None = None
@@ -25,6 +20,10 @@ class ContractOut(BaseModel):
     has_file: bool = False
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def _set_has_file(self) -> "ContractOut":
+        return self
 
     model_config = {"from_attributes": True}
 
@@ -44,4 +43,4 @@ class ContractClause(BaseModel):
 
 
 class ReviewReportExport(BaseModel):
-    format: str = "markdown"  # markdown / docx
+    format: Literal["markdown", "docx"] = "markdown"

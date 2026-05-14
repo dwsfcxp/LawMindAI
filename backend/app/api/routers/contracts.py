@@ -2,6 +2,7 @@
 
 import uuid
 import logging
+import tempfile
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import select
@@ -21,23 +22,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _to_out(row: Contract) -> ContractOut:
+    out = ContractOut.model_validate(row)
+    out.has_file = row.file_path is not None
+    return out
+
+
 @router.get("", response_model=list[ContractOut])
 async def list_contracts(
     case_id: int | None = None,
+    skip: int = 0,
+    limit: int = 50,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = select(Contract).where(Contract.owner_id == current_user.id)
     if case_id:
         query = query.where(Contract.case_id == case_id)
-    query = query.order_by(Contract.created_at.desc())
+    query = query.order_by(Contract.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
-    items = []
-    for c in result.scalars().all():
-        out = ContractOut.model_validate(c)
-        out.has_file = c.file_path is not None
-        items.append(out)
-    return items
+    return [_to_out(c) for c in result.scalars().all()]
 
 
 @router.post("/upload", response_model=ContractOut)
@@ -56,7 +60,6 @@ async def upload_contract(
     if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
         raise HTTPException(400, f"文件大小超过{settings.MAX_UPLOAD_SIZE_MB}MB限制")
 
-    # Validate case ownership
     if case_id:
         case = await db.execute(select(Case).where(Case.id == case_id, Case.owner_id == current_user.id))
         if not case.scalar_one_or_none():
@@ -101,9 +104,7 @@ async def upload_contract(
         await db.commit()
         await db.refresh(row)
 
-    out = ContractOut.model_validate(row)
-    out.has_file = True
-    return out
+    return _to_out(row)
 
 
 @router.get("/{contract_id}", response_model=ContractOut)
@@ -118,9 +119,7 @@ async def get_contract(
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(404, "合同不存在")
-    out = ContractOut.model_validate(row)
-    out.has_file = row.file_path is not None
-    return out
+    return _to_out(row)
 
 
 @router.post("/{contract_id}/review", response_model=ContractOut)
@@ -153,10 +152,12 @@ async def review_contract_endpoint(
     if not row.parsed_text:
         raise HTTPException(400, "合同文本为空，无法审查")
 
-    # Get case context
+    # Get case context — verify ownership
     case_context = ""
     if row.case_id:
-        case_result = await db.execute(select(Case).where(Case.id == row.case_id))
+        case_result = await db.execute(
+            select(Case).where(Case.id == row.case_id, Case.owner_id == current_user.id)
+        )
         case = case_result.scalar_one_or_none()
         if case and case.description:
             case_context = case.description
@@ -173,14 +174,11 @@ async def review_contract_endpoint(
     except Exception as e:
         logger.error(f"Contract review failed for {contract_id}: {e}")
         row.status = "failed"
-        row.review_report = f"审查失败: {e}"
+        row.review_report = "审查失败，请稍后重试。"
 
     await db.commit()
     await db.refresh(row)
-
-    out = ContractOut.model_validate(row)
-    out.has_file = row.file_path is not None
-    return out
+    return _to_out(row)
 
 
 @router.post("/{contract_id}/export")
@@ -210,9 +208,7 @@ async def _export_docx(row: Contract) -> "FileResponse":
     from docx import Document
     from docx.shared import Pt, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.oxml.ns import qn
     from fastapi.responses import FileResponse
-    from app.config import get_settings
 
     doc = Document()
 
@@ -229,55 +225,55 @@ async def _export_docx(row: Contract) -> "FileResponse":
     run.font.size = Pt(22)
     run.bold = True
 
-    # Parse markdown-like report into paragraphs
     lines = (row.review_report or "").split("\n")
     for line in lines:
         line = line.strip()
         if not line:
-            doc.add_paragraph()
-            continue
-
-        if line.startswith("# "):
+            p = doc.add_paragraph()
+        elif line.startswith("# "):
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(line[2:])
-            run.font.size = Pt(18)
-            run.bold = True
+            r = p.add_run(line[2:])
+            r.font.size = Pt(18)
+            r.bold = True
         elif line.startswith("## "):
             p = doc.add_paragraph()
-            run = p.add_run(line[3:])
-            run.font.size = Pt(16)
-            run.bold = True
+            r = p.add_run(line[3:])
+            r.font.size = Pt(16)
+            r.bold = True
         elif line.startswith("### "):
             p = doc.add_paragraph()
-            run = p.add_run(line[4:])
-            run.font.size = Pt(15)
-            run.bold = True
+            r = p.add_run(line[4:])
+            r.font.size = Pt(15)
+            r.bold = True
         elif line.startswith("> "):
             p = doc.add_paragraph()
-            run = p.add_run(line[2:])
-            run.font.size = Pt(12)
-            run.italic = True
+            r = p.add_run(line[2:])
+            r.font.size = Pt(12)
+            r.italic = True
         elif line.startswith("- "):
             p = doc.add_paragraph()
-            run = p.add_run(line[2:])
-            run.font.size = Pt(14)
+            r = p.add_run(line[2:])
+            r.font.size = Pt(14)
         else:
             p = doc.add_paragraph()
-            run = p.add_run(line)
-            run.font.size = Pt(14)
+            r = p.add_run(line)
+            r.font.size = Pt(14)
 
         p.paragraph_format.line_spacing = Pt(28)
 
-    settings = get_settings()
-    output_dir = settings.upload_path / "exports"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Write to temp file to avoid concurrent write issues
     safe_title = "".join(c for c in row.title if c.isalnum() or c in "（）()—")[:50]
-    filename = f"审查报告_{row.id}_{safe_title}.docx"
-    filepath = output_dir / filename
-    doc.save(str(filepath))
+    filename = f"审查报告_{safe_title}.docx"
+    tmp = tempfile.NamedTemporaryFile(suffix=".docx", delete=False, prefix=f"contract_{row.id}_")
+    doc.save(tmp.name)
+    tmp.close()
 
-    return FileResponse(str(filepath), filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    return FileResponse(
+        tmp.name,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @router.delete("/{contract_id}")

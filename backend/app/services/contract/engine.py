@@ -4,31 +4,37 @@ import json
 import logging
 from app.services.llm_client import create_llm_client_from_settings
 from app.config import get_settings
+from app.schemas.contract import ContractRiskItem
 
 logger = logging.getLogger(__name__)
 
 REVIEW_DIMENSIONS = {
-    "legality": {
-        "name": "合法性",
-        "description": "条款是否违反强制性法律规定",
-    },
-    "completeness": {
-        "name": "完备性",
-        "description": "是否缺少必要条款（违约责任、争议解决等）",
-    },
-    "fairness": {
-        "name": "公平性",
-        "description": "权利义务是否明显失衡",
-    },
-    "clarity": {
-        "name": "明确性",
-        "description": "表述是否清晰无歧义",
-    },
-    "enforceability": {
-        "name": "可执行性",
-        "description": "条款是否具备实际可操作性",
-    },
+    "legality": "合法性",
+    "completeness": "完备性",
+    "fairness": "公平性",
+    "clarity": "明确性",
+    "enforceability": "可执行性",
 }
+
+
+def _validate_risk_items(raw_items: list) -> list[dict]:
+    """Validate and sanitize LLM-returned risk items."""
+    valid = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            validated = ContractRiskItem(
+                dimension=str(item.get("dimension", "enforceability")),
+                level=str(item.get("level", "low")) if item.get("level") in ("high", "medium", "low") else "low",
+                clause=str(item.get("clause", "")),
+                issue=str(item.get("issue", "")),
+                suggestion=str(item.get("suggestion", "")),
+            )
+            valid.append(validated.model_dump())
+        except Exception:
+            continue
+    return valid
 
 
 async def review_contract(
@@ -91,38 +97,53 @@ async def review_contract(
 
 请直接返回JSON，不要包含其他文字。"""
 
+    raw_text = ""
     try:
         response = await client.messages.create(
             model=model,
             max_tokens=8192,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        raw_text = response.content[0].text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        result = json.loads(raw)
-    except (json.JSONDecodeError, Exception) as e:
-        logger.warning(f"AI contract review parsing failed: {e}")
-        # Fallback: return raw text as report
-        try:
-            raw = response.content[0].text if 'response' in dir() else str(e)
-        except:
-            raw = str(e)
+        result = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        logger.warning(f"AI contract review JSON parse failed: {e}")
         result = {
             "risk_items": [],
-            "summary": f"审查引擎返回格式异常，原始响应:\n{raw[:2000]}",
+            "summary": f"审查引擎返回格式异常，原始响应:\n{raw_text[:2000]}",
             "risk_score": None,
             "recommendations": [],
             "missing_clauses": [],
         }
+    except Exception as e:
+        logger.error(f"AI contract review call failed: {e}")
+        return {
+            "report": f"审查服务暂时不可用，请稍后重试。",
+            "risk_items": [],
+            "risk_score": None,
+        }
 
-    # Build readable report
+    # Validate risk items from LLM output
+    risk_items = _validate_risk_items(result.get("risk_items", []))
+
+    # Sanitize risk_score
+    try:
+        risk_score = float(result.get("risk_score", 0))
+        risk_score = max(0, min(100, risk_score))
+    except (TypeError, ValueError):
+        risk_score = None
+
+    result["risk_items"] = risk_items
+    result["risk_score"] = risk_score
+
     report = _build_report(result)
     return {
         "report": report,
-        "risk_items": result.get("risk_items", []),
-        "risk_score": result.get("risk_score"),
+        "risk_items": risk_items,
+        "risk_score": risk_score,
     }
 
 
@@ -152,7 +173,7 @@ def _build_report(result: dict) -> str:
                 continue
             parts.append(f"\n### {level_name}\n")
             for i, item in enumerate(items, 1):
-                dim = REVIEW_DIMENSIONS.get(item.get("dimension", ""), {}).get("name", item.get("dimension", ""))
+                dim = REVIEW_DIMENSIONS.get(item.get("dimension", ""), item.get("dimension", ""))
                 parts.append(f"\n**{i}. [{dim}]** {item.get('issue', '')}\n")
                 clause = item.get("clause", "")
                 if clause:

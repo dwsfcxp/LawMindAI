@@ -325,7 +325,7 @@ export default function ContractReview() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  {selectedContract.status === 'pending' && selectedContract.parsed_text && (
+                  {(selectedContract.status === 'pending' || selectedContract.status === 'failed') && (selectedContract.parsed_text || selectedContract.has_file) && (
                     <button
                       onClick={() => handleReview(selectedContract.id)}
                       disabled={reviewing === selectedContract.id}
@@ -388,7 +388,7 @@ export default function ContractReview() {
                     风险项 ({selectedContract.risk_items.length})
                   </h3>
                   <div className="grid gap-3">
-                    {selectedContract.risk_items
+                    {[...selectedContract.risk_items]
                       .sort((a, b) => {
                         const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
                         return (order[a.level] ?? 3) - (order[b.level] ?? 3);
