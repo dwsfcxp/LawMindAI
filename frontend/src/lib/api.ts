@@ -561,4 +561,86 @@ export const contractApi = {
   },
 };
 
+// ── Evidence Chain & Cross-examination API ──────────────────────────────
+
+export interface ChainAnalysisResult {
+  chain_report: string;
+  completeness_score: number | null;
+  chain_status: string;
+  missing_evidence: { type: string; purpose: string; urgency: string }[];
+}
+
+export const evidenceChainApi = {
+  analyzeChain: async (caseId: number): Promise<ChainAnalysisResult> => {
+    const res = await apiClient.post(`/evidence/chain-analysis/${caseId}`, null, { timeout: 300000 });
+    return res.data;
+  },
+
+  crossExamination: async (evidenceId: number): Promise<{ cross_examination: string }> => {
+    const res = await apiClient.post(`/evidence/${evidenceId}/cross-examination`, null, { timeout: 300000 });
+    return res.data;
+  },
+};
+
+// ── Knowledge Base API ──────────────────────────────────────────────────
+
+export interface KnowledgeItem {
+  id: number;
+  title: string;
+  content: string;
+  source: string | null;
+  tags: string[] | null;
+  embedding_id: string | null;
+  owner_id: number | null;
+  team_id: number | null;
+  created_at: string;
+}
+
+export interface KnowledgeStats {
+  total: number;
+  tags: string[];
+}
+
+export const knowledgeApi = {
+  list: async (params?: { skip?: number; limit?: number; tag?: string }): Promise<KnowledgeItem[]> => {
+    const res = await apiClient.get('/knowledge', { params });
+    return res.data;
+  },
+
+  create: async (data: {
+    title: string;
+    content: string;
+    source?: string;
+    tags?: string[];
+    team_id?: number;
+  }): Promise<KnowledgeItem> => {
+    const res = await apiClient.post('/knowledge', data);
+    return res.data;
+  },
+
+  get: async (id: number): Promise<KnowledgeItem> => {
+    const res = await apiClient.get(`/knowledge/${id}`);
+    return res.data;
+  },
+
+  update: async (id: number, data: {
+    title?: string;
+    content?: string;
+    source?: string;
+    tags?: string[];
+  }): Promise<KnowledgeItem> => {
+    const res = await apiClient.put(`/knowledge/${id}`, data);
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/knowledge/${id}`);
+  },
+
+  stats: async (): Promise<KnowledgeStats> => {
+    const res = await apiClient.get('/knowledge/stats');
+    return res.data;
+  },
+};
+
 export default apiClient;

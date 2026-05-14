@@ -11,6 +11,7 @@ import Settings from './pages/Settings';
 import Evidence from './pages/Evidence';
 import Research from './pages/Research';
 import ContractReview from './pages/ContractReview';
+import Knowledge from './pages/Knowledge';
 
 function App() {
   return (
@@ -33,6 +34,7 @@ function App() {
         <Route path="research" element={<Research />} />
         <Route path="contracts" element={<ContractReview />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="knowledge" element={<Knowledge />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

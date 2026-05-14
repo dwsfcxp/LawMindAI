@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
-import { caseApi, evidenceApi, type Case as CaseType, type EvidenceItem } from '@/lib/api';
+import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight, Link2, MessageSquare } from 'lucide-react';
+import { caseApi, evidenceApi, evidenceChainApi, type Case as CaseType, type EvidenceItem } from '@/lib/api';
+import type { ChainAnalysisResult } from '@/lib/api';
 
 const TYPE_LABELS: Record<string, string> = {
   documentary: '书证',
@@ -31,6 +32,10 @@ export default function Evidence() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<number | null>(null);
+  const [chainResult, setChainResult] = useState<ChainAnalysisResult | null>(null);
+  const [analyzingChain, setAnalyzingChain] = useState(false);
+  const [crossExamId, setCrossExamId] = useState<number | null>(null);
+  const [crossExamText, setCrossExamText] = useState<Record<number, string>>({});
 
   const [form, setForm] = useState({ case_id: 0, type: 'documentary', title: '', tags: '' });
 
@@ -92,6 +97,28 @@ export default function Evidence() {
     loadEvidence();
   };
 
+  const handleChainAnalysis = async () => {
+    if (!selectedCase) return;
+    setAnalyzingChain(true);
+    setChainResult(null);
+    try {
+      const result = await evidenceChainApi.analyzeChain(selectedCase);
+      setChainResult(result);
+    } catch (e: any) {
+      alert(e.response?.data?.detail || '证据链分析失败');
+    } finally { setAnalyzingChain(false); }
+  };
+
+  const handleCrossExamination = async (id: number) => {
+    setCrossExamId(id);
+    try {
+      const result = await evidenceChainApi.crossExamination(id);
+      setCrossExamText(prev => ({ ...prev, [id]: result.cross_examination }));
+    } catch (e: any) {
+      alert(e.response?.data?.detail || '质证意见生成失败');
+    } finally { setCrossExamId(null); }
+  };
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <input type="file" ref={fileInputRef} className="hidden" onChange={onFileSelected}
@@ -103,10 +130,19 @@ export default function Evidence() {
           <h1 className="text-2xl font-bold">证据管理</h1>
         </div>
         {selectedCase && (
-          <button onClick={() => { setForm({ case_id: selectedCase, type: 'documentary', title: '', tags: '' }); setShowCreate(true); }}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4" /> 添加证据
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => { setForm({ case_id: selectedCase, type: 'documentary', title: '', tags: '' }); setShowCreate(true); }}
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+              <Plus className="h-4 w-4" /> 添加证据
+            </button>
+            {evidenceList.length > 0 && (
+              <button onClick={handleChainAnalysis} disabled={analyzingChain}
+                className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">
+                {analyzingChain ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                证据链分析
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -186,6 +222,19 @@ export default function Evidence() {
                       <div className="rounded-md bg-blue-50 p-3 text-sm whitespace-pre-wrap max-h-80 overflow-y-auto">{ev.analysis}</div>
                     </div>
                   )}
+                  {ev.ocr_text && (
+                    <button onClick={() => handleCrossExamination(ev.id)} disabled={crossExamId === ev.id}
+                      className="flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">
+                      {crossExamId === ev.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+                      生成质证意见
+                    </button>
+                  )}
+                  {crossExamText[ev.id] && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-1">质证意见</h4>
+                      <div className="rounded-md bg-amber-50 p-3 text-sm whitespace-pre-wrap max-h-80 overflow-y-auto">{crossExamText[ev.id]}</div>
+                    </div>
+                  )}
                   {ev.tags && ev.tags.length > 0 && (
                     <div className="flex gap-1 flex-wrap">
                       {ev.tags.map((t, i) => <span key={i} className="rounded-full bg-muted px-2 py-0.5 text-xs">{t}</span>)}
@@ -195,6 +244,23 @@ export default function Evidence() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Chain Analysis Result */}
+      {chainResult && (
+        <div className="rounded-lg border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold">证据链分析</h3>
+            <div className="flex items-center gap-2">
+              <span className={`text-lg font-bold ${chainResult.completeness_score && chainResult.completeness_score >= 70 ? 'text-green-600' : chainResult.completeness_score && chainResult.completeness_score >= 40 ? 'text-amber-600' : 'text-red-600'}`}>
+                {chainResult.completeness_score ?? '-'}分
+              </span>
+              <span className="text-sm text-muted-foreground">{chainResult.chain_status}</span>
+              <button onClick={() => setChainResult(null)} className="text-xs text-muted-foreground hover:underline">关闭</button>
+            </div>
+          </div>
+          <div className="max-h-96 overflow-y-auto text-sm whitespace-pre-wrap">{chainResult.chain_report}</div>
         </div>
       )}
 

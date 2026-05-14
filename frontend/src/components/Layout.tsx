@@ -14,6 +14,7 @@ import {
   BookOpen,
   Settings,
   ShieldCheck,
+  Library,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/documents', label: '文书生成', icon: FileText },
   { to: '/contracts', label: '合同审查', icon: ShieldCheck },
   { to: '/research', label: '法律研究', icon: BookOpen },
+  { to: '/knowledge', label: '知识库', icon: Library },
   { to: '/search', label: '法律检索', icon: Search },
   { to: '/templates', label: '模板管理', icon: FileCode },
   { to: '/settings', label: '系统设置', icon: Settings },

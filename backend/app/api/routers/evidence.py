@@ -16,6 +16,7 @@ from app.models.evidence import Evidence
 from app.schemas.evidence import EvidenceCreate, EvidenceUpdate, EvidenceOut
 from app.services.evidence.ocr import validate_file_type, extract_text
 from app.services.evidence.analysis import analyze_evidence
+from app.services.evidence.chain import analyze_evidence_chain, generate_cross_examination
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -230,3 +231,67 @@ async def download_evidence(
         raise HTTPException(404, "文件已被删除")
 
     return FileResponse(str(fp), filename=fp.name, media_type="application/octet-stream")
+
+
+@router.post("/chain-analysis/{case_id}")
+async def chain_analysis(
+    case_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """分析案件的证据链完整性"""
+    case_result = await db.execute(
+        select(Case).where(Case.id == case_id, Case.owner_id == current_user.id)
+    )
+    case = case_result.scalar_one_or_none()
+    if not case:
+        raise HTTPException(404, "案件不存在")
+
+    ev_result = await db.execute(
+        select(Evidence).where(Evidence.case_id == case_id).order_by(Evidence.sort_order)
+    )
+    evidence_list = []
+    for ev in ev_result.scalars().all():
+        evidence_list.append({
+            "id": ev.id,
+            "title": ev.title,
+            "type": ev.type,
+            "ocr_text": ev.ocr_text,
+            "analysis": ev.analysis,
+            "tags": ev.tags,
+        })
+
+    if not evidence_list:
+        raise HTTPException(400, "该案件暂无证据，无法进行证据链分析")
+
+    result = await analyze_evidence_chain(case.description or case.title, evidence_list)
+    return result
+
+
+@router.post("/{evidence_id}/cross-examination")
+async def cross_examination(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """为证据生成质证意见"""
+    result = await db.execute(
+        select(Evidence).join(Case).where(Evidence.id == evidence_id, Case.owner_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "证据不存在")
+
+    if not row.ocr_text:
+        raise HTTPException(400, "证据文字为空，请先上传文件并完成OCR")
+
+    case_result = await db.execute(select(Case).where(Case.id == row.case_id))
+    case = case_result.scalar_one_or_none()
+    case_context = f"{case.description or ''} {case.title or ''}" if case else ""
+
+    opinion = await generate_cross_examination(
+        evidence_text=row.ocr_text,
+        evidence_type=row.type,
+        case_context=case_context,
+    )
+    return {"cross_examination": opinion}
