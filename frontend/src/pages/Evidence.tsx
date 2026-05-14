@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight, Link2, MessageSquare } from 'lucide-react';
+import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight, Link2, MessageSquare, AlertCircle, X, Plus } from 'lucide-react';
 import { caseApi, evidenceApi, evidenceChainApi, type Case as CaseType, type EvidenceItem } from '@/lib/api';
+import { useToast } from '@/lib/toast';
 import type { ChainAnalysisResult } from '@/lib/api';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -24,6 +25,7 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 export default function Evidence() {
+  const { toast } = useToast();
   const [cases, setCases] = useState<CaseType[]>([]);
   const [selectedCase, setSelectedCase] = useState<number | null>(null);
   const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>([]);
@@ -38,16 +40,28 @@ export default function Evidence() {
   const [analyzingChain, setAnalyzingChain] = useState(false);
   const [crossExamId, setCrossExamId] = useState<number | null>(null);
   const [crossExamText, setCrossExamText] = useState<Record<number, string>>({});
+  const [casesLoading, setCasesLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const [form, setForm] = useState({ case_id: 0, type: 'documentary', title: '', tags: '' });
 
   useEffect(() => {
-    caseApi.list().then(setCases).catch(console.error);
+    caseApi.list().then(setCases).catch(e => setError('加载案件列表失败')).finally(() => setCasesLoading(false));
   }, []);
 
   useEffect(() => {
     if (selectedCase) loadEvidence();
   }, [selectedCase]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showCreate) {
+        setShowCreate(false);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [showCreate]);
 
   const loadEvidence = async () => {
     if (!selectedCase) return;
@@ -55,8 +69,9 @@ export default function Evidence() {
     try {
       const data = await evidenceApi.list(selectedCase);
       setEvidenceList(data);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    } catch {
+      setError('加载证据列表失败');
+    } finally { setLoading(false); }
   };
 
   const handleCreate = async () => {
@@ -65,7 +80,11 @@ export default function Evidence() {
       setShowCreate(false);
       setForm({ case_id: 0, type: 'documentary', title: '', tags: '' });
       loadEvidence();
-    } catch (e) { alert('创建失败'); }
+      toast({ type: 'success', title: '证据已创建' });
+    } catch (e) {
+      setError('创建失败');
+      toast({ type: 'error', title: '创建失败' });
+    }
   };
 
   const handleUpload = async (evidenceId: number) => {
@@ -80,7 +99,12 @@ export default function Evidence() {
     try {
       await evidenceApi.upload(uploadTarget, file);
       loadEvidence();
-    } catch (err: any) { alert('上传失败: ' + (err.message || '')); }
+      toast({ type: 'success', title: '文件上传成功' });
+    } catch (err: any) {
+      const msg = '上传失败: ' + (err.message || '');
+      setError(msg);
+      toast({ type: 'error', title: '上传失败' });
+    }
     finally { setUploading(null); setUploadTarget(null); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
@@ -89,7 +113,11 @@ export default function Evidence() {
     try {
       await evidenceApi.analyze(id);
       loadEvidence();
-    } catch (e) { alert('分析失败'); }
+      toast({ type: 'success', title: 'AI分析完成' });
+    } catch (e) {
+      setError('分析失败');
+      toast({ type: 'error', title: 'AI分析失败' });
+    }
     finally { setAnalyzing(null); }
   };
 
@@ -98,7 +126,11 @@ export default function Evidence() {
     try {
       await evidenceApi.delete(id);
       loadEvidence();
-    } catch (e) { alert('删除失败'); }
+      toast({ type: 'success', title: '证据已删除' });
+    } catch (e) {
+      setError('删除失败');
+      toast({ type: 'error', title: '删除失败' });
+    }
   };
 
   const handleChainAnalysis = async () => {
@@ -108,8 +140,11 @@ export default function Evidence() {
     try {
       const result = await evidenceChainApi.analyzeChain(selectedCase);
       setChainResult(result);
+      toast({ type: 'success', title: '证据链分析完成', description: `完整度评分: ${result.completeness_score ?? '-'}` });
     } catch (e: any) {
-      alert(e.response?.data?.detail || '证据链分析失败');
+      const msg = e.response?.data?.detail || '证据链分析失败';
+      setError(msg);
+      toast({ type: 'error', title: '证据链分析失败', description: msg });
     } finally { setAnalyzingChain(false); }
   };
 
@@ -118,21 +153,31 @@ export default function Evidence() {
     try {
       const result = await evidenceChainApi.crossExamination(id);
       setCrossExamText(prev => ({ ...prev, [id]: result.cross_examination }));
+      toast({ type: 'success', title: '质证意见已生成' });
     } catch (e: any) {
-      alert(e.response?.data?.detail || '质证意见生成失败');
+      const msg = e.response?.data?.detail || '质证意见生成失败';
+      setError(msg);
+      toast({ type: 'error', title: '质证意见生成失败' });
     } finally { setCrossExamId(null); }
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 px-4 sm:px-0">
       <input type="file" ref={fileInputRef} className="hidden" onChange={onFileSelected}
         accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma" />
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Upload className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-bold">证据管理</h1>
         </div>
+        {error && (
+          <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 max-w-md">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+            <button onClick={() => setError('')} className="ml-auto"><X className="h-4 w-4" /></button>
+          </div>
+        )}
         {selectedCase && (
           <div className="flex gap-2">
             <button onClick={() => { setForm({ case_id: selectedCase, type: 'documentary', title: '', tags: '' }); setShowCreate(true); }}
@@ -151,13 +196,19 @@ export default function Evidence() {
       </div>
 
       {/* 案件选择 */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <label className="text-sm font-medium">选择案件：</label>
+        {casesLoading ? (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        ) : cases.length === 0 ? (
+          <span className="text-sm text-muted-foreground">暂无案件，请先创建案件</span>
+        ) : (
         <select className="rounded-md border bg-transparent px-3 py-2 text-sm" value={selectedCase || ''}
           onChange={(e) => setSelectedCase(Number(e.target.value) || null)}>
           <option value="">请选择案件</option>
           {cases.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
         </select>
+        )}
       </div>
 
       {!selectedCase ? (
@@ -174,12 +225,12 @@ export default function Evidence() {
         <div className="space-y-3">
           {evidenceList.map(ev => (
             <div key={ev.id} className="rounded-lg border bg-card">
-              <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-accent/50"
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 cursor-pointer hover:bg-accent/50 gap-2"
                 onClick={() => setExpandedId(expandedId === ev.id ? null : ev.id)}>
-                <div className="flex items-center gap-3">
-                  {expandedId === ev.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  <FileText className="h-5 w-5 text-muted-foreground" />
-                  <div>
+                <div className="flex items-center gap-3 min-w-0">
+                  {expandedId === ev.id ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+                  <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
+                  <div className="min-w-0">
                     <span className="font-medium">{ev.title}</span>
                     <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${TYPE_COLORS[ev.type] || 'bg-gray-100'}`}>
                       {TYPE_LABELS[ev.type] || ev.type}
@@ -187,7 +238,7 @@ export default function Evidence() {
                     {ev.has_file && <span className="ml-2 text-xs text-green-600">已上传</span>}
                   </div>
                 </div>
-                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                   {!ev.has_file && (
                     <button onClick={() => handleUpload(ev.id)} disabled={uploading === ev.id}
                       className="rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50">
@@ -206,7 +257,7 @@ export default function Evidence() {
                       </button>
                     </>
                   )}
-                  <button onClick={() => handleDelete(ev.id)} className="rounded-md border px-2 py-1 text-xs text-destructive hover:bg-destructive/10">
+                  <button onClick={() => handleDelete(ev.id)} aria-label="删除证据" className="rounded-md border px-2 py-1 text-xs text-destructive hover:bg-destructive/10">
                     <Trash2 className="h-3 w-3" />
                   </button>
                 </div>
@@ -254,7 +305,7 @@ export default function Evidence() {
       {/* Chain Analysis Result */}
       {chainResult && (
         <div className="rounded-lg border p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h3 className="font-semibold">证据链分析</h3>
             <div className="flex items-center gap-2">
               <span className={`text-lg font-bold ${chainResult.completeness_score && chainResult.completeness_score >= 70 ? 'text-green-600' : chainResult.completeness_score && chainResult.completeness_score >= 40 ? 'text-amber-600' : 'text-red-600'}`}>
@@ -268,9 +319,10 @@ export default function Evidence() {
         </div>
       )}
 
+      {/* Create Evidence Modal - responsive */}
       {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCreate(false)}>
-          <div className="w-full max-w-md rounded-lg bg-background p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/50 p-4 overflow-y-auto" onClick={() => setShowCreate(false)}>
+          <div className="w-full max-w-md rounded-lg bg-background p-4 sm:p-6 shadow-xl my-4" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-semibold mb-4">添加证据</h2>
             <div className="space-y-4">
               <div>
@@ -288,7 +340,7 @@ export default function Evidence() {
               <div>
                 <label className="text-sm font-medium">标签（逗号分隔）</label>
                 <input className="mt-1 w-full rounded-md border bg-transparent px-3 py-2 text-sm"
-                  value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="如：合同,原件,甲方" />
+                  value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="如：合同,原件,甲方" onKeyDown={(e) => e.key === 'Enter' && handleCreate()} />
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3">
@@ -299,13 +351,5 @@ export default function Evidence() {
         </div>
       )}
     </div>
-  );
-}
-
-function Plus({ className }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M5 12h14" /><path d="M12 5v14" />
-    </svg>
   );
 }
