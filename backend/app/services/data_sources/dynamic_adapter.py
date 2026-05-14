@@ -1,4 +1,13 @@
-"""动态外部API适配器 — 从数据库配置动态创建数据源连接"""
+"""动态外部API适配器 — 从数据库配置动态创建数据源连接
+
+增强功能:
+- HTTP客户端连接池（limits / keep-alive）
+- 请求/响应DEBUG级日志
+- 301/302重定向正确处理
+- 分块传输编码支持
+- 响应大小限制（超过1MB不解析）
+- 正确的aclose()清理
+"""
 
 import json
 import logging
@@ -10,6 +19,9 @@ from app.services.data_sources.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Maximum response body size to parse (1 MB)
+_MAX_RESPONSE_SIZE = 1_048_576
 
 
 class DynamicExternalApiAdapter(LegalDataSourceAdapter):
@@ -50,7 +62,20 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
         else:
             raise ValueError("Invalid config type")
 
-        self._client = httpx.AsyncClient(timeout=30)
+        # Connection pooling with limits
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=True,
+            max_redirects=5,  # Limit redirect chains
+            verify=True,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=60,  # seconds
+            ),
+            # Chunked transfer encoding is handled automatically by httpx
+        )
+        self._closed = False
 
     def _get_headers(self) -> dict:
         headers = dict(self._custom_headers)
@@ -78,12 +103,27 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
     ) -> list[dict] | dict | None:
         if not path or not self._is_enabled:
             return None
+
+        if self._closed:
+            logger.warning("Attempted to call closed adapter [%s]", self.description)
+            return None
+
         url = self._build_url(path)
         for k, v in extra_params.items():
             url = url.replace(f"{{{k}}}", str(v))
         url = url.replace("{query}", query)
 
         headers = self._get_headers()
+
+        # Request logging (DEBUG level)
+        logger.debug(
+            "Dynamic API request [%s]: %s %s query=%s",
+            self.description,
+            method.upper(),
+            url,
+            query[:50],
+        )
+
         try:
             if method.upper() == "POST":
                 body = dict(self._request_template)
@@ -94,8 +134,41 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
                 params = {"query": query}
                 params.update(extra_params)
                 resp = await self._client.get(url, headers=headers, params=params)
+
+            # Check response size before parsing
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > _MAX_RESPONSE_SIZE:
+                logger.warning(
+                    "Dynamic API response too large [%s]: %s bytes > %d limit",
+                    self.description,
+                    content_length,
+                    _MAX_RESPONSE_SIZE,
+                )
+                return None
+
             resp.raise_for_status()
+
+            # Check actual body size
+            raw_text = resp.text
+            if len(raw_text) > _MAX_RESPONSE_SIZE:
+                logger.warning(
+                    "Dynamic API response body too large [%s]: %d chars > %d limit",
+                    self.description,
+                    len(raw_text),
+                    _MAX_RESPONSE_SIZE,
+                )
+                return None
+
             data = resp.json()
+
+            # Response logging (DEBUG level)
+            logger.debug(
+                "Dynamic API response [%s]: status=%d data_type=%s len=%d",
+                self.description,
+                resp.status_code,
+                type(data).__name__,
+                len(raw_text),
+            )
 
             # 响应可能是列表或包裹在某个key下的列表
             if isinstance(data, list):
@@ -107,8 +180,38 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
                         return data[key]
                 return data
             return data
+        except httpx.TimeoutException as e:
+            logger.warning("Dynamic API call timed out [%s]: %s", self.description, e)
+            return None
+        except httpx.ConnectError as e:
+            logger.warning("Dynamic API connection failed [%s]: DNS/network error: %s", self.description, e)
+            return None
+        except httpx.TooManyRedirects as e:
+            logger.warning("Dynamic API too many redirects [%s]: %s", self.description, e)
+            return None
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            # Handle 301/302 explicitly (though follow_redirects=True should cover this)
+            if status_code in (301, 302):
+                location = e.response.headers.get("location", "unknown")
+                logger.warning(
+                    "Dynamic API redirect not followed [%s]: %d -> %s",
+                    self.description, status_code, location,
+                )
+            else:
+                logger.warning(
+                    "Dynamic API returned error [%s]: HTTP %d",
+                    self.description, status_code,
+                )
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Dynamic API response not valid JSON [%s]: %s",
+                self.description, e,
+            )
+            return None
         except Exception as e:
-            logger.warning(f"Dynamic API call failed [{self.description}]: {e}")
+            logger.warning("Dynamic API call failed [%s]: %s", self.description, e)
             return None
 
     def _map_law_result(self, item: dict) -> LawSearchResult:
@@ -168,6 +271,8 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
     async def health_check(self) -> bool:
         if not self._health_check_path:
             return True
+        if self._closed:
+            return False
         try:
             url = self._build_url(self._health_check_path)
             resp = await self._client.get(url, headers=self._get_headers())
@@ -176,8 +281,15 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
             return False
 
     async def aclose(self):
-        """Clean up the HTTP client."""
-        await self._client.aclose()
+        """Clean up the HTTP client properly."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._client.aclose()
+            logger.debug("Dynamic adapter closed: %s", self.description)
+        except Exception as e:
+            logger.warning("Error closing dynamic adapter [%s]: %s", self.description, e)
 
 
 def register_dynamic_adapter(config) -> DynamicExternalApiAdapter:

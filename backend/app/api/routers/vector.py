@@ -4,6 +4,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from app.core.security import get_current_user
+from app.core.cache import vector_stats_cache, invalidate_on_create
 from app.models.user import User
 from app.services.vector.store import get_vector_service
 from app.schemas.vector import (
@@ -23,15 +24,23 @@ async def ingest_data(
     data: VectorIngestRequest,
     current_user: User = Depends(get_current_user),
 ):
-    svc = get_vector_service()
-    items = [it.model_dump() for it in data.items]
-    if data.collection == "cases":
-        count = await svc.add_cases(items)
-    elif data.collection == "statutes":
-        count = await svc.add_statutes(items)
-    else:
-        raise HTTPException(400, "collection 必须是 cases 或 statutes")
-    return {"ingested": count, "collection": data.collection}
+    try:
+        svc = get_vector_service()
+        items = [it.model_dump() for it in data.items]
+        if data.collection == "cases":
+            count = await svc.add_cases(items)
+        elif data.collection == "statutes":
+            count = await svc.add_statutes(items)
+        else:
+            raise HTTPException(400, "collection 必须是 cases 或 statutes")
+        return {"ingested": count, "collection": data.collection}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vector ingest failed: {e}")
+        raise HTTPException(500, f"向量数据导入失败: {str(e)[:200]}")
+    finally:
+        invalidate_on_create("vector")
 
 
 @router.post("/ingest/file")
@@ -69,35 +78,57 @@ async def search_vector(
     data: VectorSearchQuery,
     current_user: User = Depends(get_current_user),
 ):
-    svc = get_vector_service()
-    cases, statutes = [], []
+    if not data.query or not data.query.strip():
+        raise HTTPException(400, "搜索内容不能为空")
+    try:
+        import time
+        start = time.time()
+        svc = get_vector_service()
+        cases, statutes = [], []
 
-    async def empty():
-        return []
+        async def empty():
+            return []
 
-    tasks = []
-    if data.collection in ("all", "cases"):
-        tasks.append(svc.search_cases(data.query, data.top_k))
-    else:
-        tasks.append(empty())
-    if data.collection in ("all", "statutes"):
-        tasks.append(svc.search_statutes(data.query, data.top_k))
-    else:
-        tasks.append(empty())
+        tasks = []
+        if data.collection in ("all", "cases"):
+            tasks.append(svc.search_cases(data.query, data.top_k))
+        else:
+            tasks.append(empty())
+        if data.collection in ("all", "statutes"):
+            tasks.append(svc.search_statutes(data.query, data.top_k))
+        else:
+            tasks.append(empty())
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    if results and not isinstance(results[0], Exception):
-        cases = [VectorSearchResult(**r) for r in results[0]]
-    if len(results) > 1 and not isinstance(results[1], Exception):
-        statutes = [VectorSearchResult(**r) for r in results[1]]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if results and not isinstance(results[0], Exception):
+            cases = [VectorSearchResult(**r) for r in results[0]]
+        if len(results) > 1 and not isinstance(results[1], Exception):
+            statutes = [VectorSearchResult(**r) for r in results[1]]
 
-    return VectorSearchResponse(query=data.query, cases=cases, statutes=statutes)
+        logger.info(f"Vector search completed in {time.time()-start:.2f}s")
+        return VectorSearchResponse(query=data.query, cases=cases, statutes=statutes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vector search failed: {e}")
+        raise HTTPException(500, f"向量检索失败: {str(e)[:200]}")
 
 
 @router.get("/stats", response_model=VectorStats)
 async def get_stats(current_user: User = Depends(get_current_user)):
-    svc = get_vector_service()
-    return VectorStats(**await svc.get_stats())
+    try:
+        # Check cache first (60s TTL)
+        cached = vector_stats_cache.get("vector_stats")
+        if cached is not None:
+            return VectorStats(**cached)
+
+        svc = get_vector_service()
+        stats = await svc.get_stats()
+        vector_stats_cache.set("vector_stats", stats)
+        return VectorStats(**stats)
+    except Exception as e:
+        logger.error(f"Get vector stats failed: {e}")
+        raise HTTPException(500, "查询向量库统计失败")
 
 
 @router.delete("/{collection}/{item_id}")
@@ -106,11 +137,17 @@ async def delete_item(
     item_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    svc = get_vector_service()
-    if collection == "cases":
-        ok = await svc.delete_cases([item_id])
-    elif collection == "statutes":
-        ok = await svc.delete_statutes([item_id])
-    else:
-        raise HTTPException(400, "collection 必须是 cases 或 statutes")
-    return {"deleted": ok}
+    try:
+        svc = get_vector_service()
+        if collection == "cases":
+            ok = await svc.delete_cases([item_id])
+        elif collection == "statutes":
+            ok = await svc.delete_statutes([item_id])
+        else:
+            raise HTTPException(400, "collection 必须是 cases 或 statutes")
+        return {"deleted": ok}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vector delete failed: {e}")
+        raise HTTPException(500, f"向量数据删除失败: {str(e)[:200]}")

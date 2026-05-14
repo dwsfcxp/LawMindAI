@@ -2,14 +2,17 @@ import json
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import FileResponse
-from sqlalchemy import select
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, validate_upload, sanitize_filename, check_rate_limit
 from app.config import get_settings
 from app.models.user import User
 from app.models.document import Document, Template
@@ -22,32 +25,47 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------------
+# Quality check response schema
+# ---------------------------------------------------------------------------
+
+class QualityCheckIssue(BaseModel):
+    """A single quality check issue."""
+    category: str = ""
+    severity: str = "info"  # error / warning / info
+    description: str = ""
+    location: str = ""
+    suggestion: str = ""
+
+
+class QualityCheckResponse(BaseModel):
+    """Structured response for document quality check."""
+    document_id: int
+    quality_check: dict  # Contains: passed, issues, checks, quality_score, summary
+
+
+
 @router.post("/extract-text")
 async def extract_text_from_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
     """上传文件并提取文字内容，供文书生成和法律研究使用。"""
-    if not validate_file_type(file.filename or ""):
-        raise HTTPException(400, "不支持的文件类型，允许: PDF, DOC, DOCX, TXT, XLSX, XLS, PNG, JPG, GIF, WEBP, BMP, TIFF")
+    content = await validate_upload(file)
 
     settings = get_settings()
-    content = await file.read()
-    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        raise HTTPException(400, f"文件大小超过{settings.MAX_UPLOAD_SIZE_MB}MB限制")
-
     tmp_dir = settings.upload_path / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     ext = Path(file.filename or ".bin").suffix
     tmp_path = tmp_dir / f"{uuid.uuid4().hex[:12]}{ext}"
-    await asyncio.to_thread(tmp_path.write_bytes, content)
 
     try:
+        await asyncio.to_thread(tmp_path.write_bytes, content)
         text = await extract_text(tmp_path)
     finally:
         await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
 
-    return {"filename": file.filename, "text": text}
+    return {"filename": sanitize_filename(file.filename or ""), "text": text}
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -59,14 +77,36 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Document).where(Document.owner_id == current_user.id)
+    base_filter = Document.owner_id == current_user.id
+    # Count query
+    count_q = select(func.count(Document.id)).where(base_filter)
+    if case_id:
+        count_q = count_q.where(Document.case_id == case_id)
+    if type:
+        count_q = count_q.where(Document.type == type)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    q = select(Document).where(base_filter)
     if case_id:
         q = q.where(Document.case_id == case_id)
     if type:
         q = q.where(Document.type == type)
     q = q.order_by(Document.updated_at.desc()).offset(skip).limit(limit)
     result = await db.execute(q)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+    # Truncate content in list view
+    response_data = []
+    for doc in items:
+        out = DocumentOut.model_validate(doc)
+        if out.content and len(out.content) > 500:
+            out.content = out.content[:500] + "..."
+        response_data.append(out)
+
+    return JSONResponse(
+        content=[r.model_dump(mode="json") for r in response_data],
+        headers={"X-Total-Count": str(total)},
+    )
 
 
 @router.post("/generate", response_model=DocumentOut, status_code=201)
@@ -75,6 +115,10 @@ async def generate_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Rate limit document generation: 10 per hour per user
+    if not check_rate_limit(f"doc_gen:{current_user.id}", max_requests=10, window_seconds=3600):
+        raise HTTPException(429, "文书生成请求过于频繁，请一小时后再试")
+
     # 获取模板
     template = None
     if data.template_id:
@@ -118,7 +162,7 @@ async def generate_document(
             research_context=research_context or None,
         )
     except RuntimeError as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, f"文书生成服务暂时不可用: {str(e)[:200]}")
     except Exception as e:
         logger.exception(f"Document generation failed: {e}")
         raise HTTPException(500, f"文书生成失败: {str(e)[:200]}")
@@ -188,7 +232,7 @@ async def generate_document_bundle(
             research_context=research_context or None,
         )
     except RuntimeError as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, f"文书集合生成服务暂时不可用: {str(e)[:200]}")
     except Exception as e:
         logger.exception(f"Bundle generation failed: {e}")
         raise HTTPException(500, f"文书集合生成失败: {str(e)[:200]}")
@@ -325,7 +369,7 @@ async def review_document(
     try:
         reviewed_content = await engine.review(doc.content, doc.type)
     except RuntimeError as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, f"文书审查服务暂时不可用: {str(e)[:200]}")
     doc.content = reviewed_content
     doc.status = "reviewed"
     await db.flush()
@@ -349,7 +393,7 @@ async def verify_document_laws(
     return {"document_id": doc_id, "verification_results": results, "total": len(results)}
 
 
-@router.post("/{doc_id}/quality-check")
+@router.post("/{doc_id}/quality-check", response_model=QualityCheckResponse)
 async def quality_check_document(
     doc_id: int,
     current_user: User = Depends(get_current_user),
@@ -368,9 +412,9 @@ async def quality_check_document(
     try:
         check_result = await engine.quality_check(doc.content, doc.type, parsed_case)
     except RuntimeError as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, f"质量核查服务暂时不可用: {str(e)[:200]}")
     except Exception as e:
         logger.exception(f"Quality check failed: {e}")
         raise HTTPException(500, f"质量核查失败: {str(e)[:200]}")
 
-    return {"document_id": doc_id, "quality_check": check_result}
+    return QualityCheckResponse(document_id=doc_id, quality_check=check_result)

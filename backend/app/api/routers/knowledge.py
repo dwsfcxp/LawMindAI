@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user, validate_upload, sanitize_filename
+from app.core.cache import knowledge_stats_cache, invalidate_on_create, invalidate_on_update, invalidate_on_delete
 from app.config import get_settings
 from app.models.user import User
 from app.models.knowledge import KnowledgeItem
@@ -141,9 +142,8 @@ async def create_knowledge(
         logger.error("Create knowledge failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "创建知识条目失败")
-
-
-# ── Stats ────────────────────────────────────────────────────────────────────
+    finally:
+        invalidate_on_create("knowledge", current_user.id)
 
 @router.get("/stats")
 async def knowledge_stats(
@@ -151,6 +151,12 @@ async def knowledge_stats(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        # Check cache first (60s TTL)
+        cache_key = f"knowledge_stats:{current_user.id}"
+        cached = knowledge_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         base_where = _owner_or_team_filter(current_user)
         total = await db.execute(
             select(func.count(KnowledgeItem.id)).where(base_where)
@@ -162,7 +168,9 @@ async def knowledge_stats(
         for row in result.scalars().all():
             if row:
                 all_tags.update(row)
-        return {"total": total.scalar() or 0, "tags": sorted(all_tags)}
+        stats = {"total": total.scalar() or 0, "tags": sorted(all_tags)}
+        knowledge_stats_cache.set(cache_key, stats)
+        return stats
     except Exception as e:
         logger.error("Knowledge stats failed: %s", e)
         raise HTTPException(500, "查询知识库统计失败")
@@ -372,9 +380,8 @@ async def update_knowledge(
         logger.error("Update knowledge failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "更新知识条目失败")
-
-
-# ── Delete single ────────────────────────────────────────────────────────────
+    finally:
+        invalidate_on_update("knowledge", item_id)
 
 @router.delete("/{item_id}")
 async def delete_knowledge(
@@ -411,9 +418,8 @@ async def delete_knowledge(
         logger.error("Delete knowledge failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除知识条目失败")
-
-
-# ── Batch delete ──────────────────────────────────────────────────────────────
+    finally:
+        invalidate_on_delete("knowledge", item_id)
 
 @router.post("/batch-delete")
 async def batch_delete_knowledge(

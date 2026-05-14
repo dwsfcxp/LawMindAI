@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class SearchQuery(BaseModel):
@@ -7,6 +7,32 @@ class SearchQuery(BaseModel):
     sources: list[str] | None = None
     top_k: int = 20
     case_id: int | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "query": "合同违约赔偿标准",
+                    "result_type": "all",
+                    "top_k": 20,
+                }
+            ]
+        }
+    }
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("搜索内容不能为空")
+        return v.strip()
+
+    @field_validator("top_k")
+    @classmethod
+    def top_k_range(cls, v):
+        if v < 1 or v > 100:
+            raise ValueError("top_k 必须在 1-100 之间")
+        return v
 
 
 class LawSearchResult(BaseModel):

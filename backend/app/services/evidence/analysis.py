@@ -4,6 +4,7 @@ import asyncio
 import logging
 from app.services.llm_client import create_llm_client_from_settings
 from app.config import get_settings
+from app.core.monitoring import timed, LLMTimer, record_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ EVIDENCE_ANALYSIS_PROMPT = """你是一位经验丰富的中国律师，请对�
 请用专业但易懂的语言进行回答。"""
 
 
+@timed("evidence:analyze", slow_threshold_ms=5000)
 async def analyze_evidence(
     ocr_text: str,
     case_context: str = "",
@@ -62,21 +64,29 @@ async def analyze_evidence(
     truncated_ocr = ocr_text[:_MAX_OCR_LENGTH]
 
     try:
-        response = await asyncio.wait_for(
-            client.messages.create(
-                model=model,
-                max_tokens=4096,
-                system="你是一位资深中国执业律师，擅长证据分析和质证。",
-                messages=[{
-                    "role": "user",
-                    "content": EVIDENCE_ANALYSIS_PROMPT.format(
-                        ocr_text=truncated_ocr,
-                        case_context=effective_context,
-                    ),
-                }],
-            ),
-            timeout=_LLM_TIMEOUT,
-        )
+        with LLMTimer(model) as timer:
+            response = await asyncio.wait_for(
+                client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system="你是一位资深中国执业律师，擅长证据分析和质证。",
+                    messages=[{
+                        "role": "user",
+                        "content": EVIDENCE_ANALYSIS_PROMPT.format(
+                            ocr_text=truncated_ocr,
+                            case_context=effective_context,
+                        ),
+                    }],
+                ),
+                timeout=_LLM_TIMEOUT,
+            )
+            # Extract token usage if available
+            usage = getattr(response, "usage", None)
+            if usage:
+                timer.set_tokens(
+                    getattr(usage, "input_tokens", 0),
+                    getattr(usage, "output_tokens", 0),
+                )
         result = response.content[0].text if response.content else "分析完成但无结果"
         # Safety cap on response length.
         if len(result) > _MAX_RESPONSE_LENGTH:

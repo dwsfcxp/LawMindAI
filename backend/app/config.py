@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # Logging configuration
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    LOG_FILE: str = ""  # Set to a file path to enable file logging in production
+
+    # Email error notifications (production)
+    ERROR_EMAIL_ENABLED: bool = False
+    ERROR_EMAIL_SMTP_HOST: str = ""
+    ERROR_EMAIL_SMTP_PORT: int = 587
+    ERROR_EMAIL_SMTP_USER: str = ""
+    ERROR_EMAIL_SMTP_PASSWORD: str = ""
+    ERROR_EMAIL_FROM: str = ""
+    ERROR_EMAIL_TO: str = ""  # Comma-separated list of recipients
 
     model_config = {
         "env_file": [str(Path(__file__).resolve().parent.parent.parent / ".env"), ".env"],
@@ -188,6 +198,7 @@ class Settings(BaseSettings):
         # Remove existing handlers to avoid duplicates
         root_logger.handlers.clear()
 
+        # Console handler (always)
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(log_level)
 
@@ -206,6 +217,49 @@ class Settings(BaseSettings):
 
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
+
+        # File handler (production or when LOG_FILE is set)
+        if self.LOG_FILE:
+            try:
+                from logging.handlers import RotatingFileHandler
+                log_path = Path(self.LOG_FILE)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = RotatingFileHandler(
+                    str(log_path),
+                    maxBytes=10 * 1024 * 1024,  # 10MB
+                    backupCount=5,
+                    encoding="utf-8",
+                )
+                file_handler.setLevel(log_level)
+                file_handler.setFormatter(logging.Formatter(
+                    "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+                    datefmt="%Y-%m-%dT%H:%M:%S",
+                ))
+                root_logger.addHandler(file_handler)
+            except Exception as e:
+                logger.warning("Failed to set up file logging: %s", e)
+
+        # Email handler for critical errors in production
+        if self.is_production and self.ERROR_EMAIL_ENABLED:
+            try:
+                from logging.handlers import SMTPHandler
+                mail_handler = SMTPHandler(
+                    mailhost=(self.ERROR_EMAIL_SMTP_HOST, self.ERROR_EMAIL_SMTP_PORT),
+                    fromaddr=self.ERROR_EMAIL_FROM,
+                    toaddrs=[a.strip() for a in self.ERROR_EMAIL_TO.split(",")],
+                    subject=f"[{self.APP_NAME}] Production Error",
+                    credentials=(self.ERROR_EMAIL_SMTP_USER, self.ERROR_EMAIL_SMTP_PASSWORD),
+                    secure=(),
+                )
+                mail_handler.setLevel(logging.ERROR)
+                mail_handler.setFormatter(logging.Formatter(
+                    "%(asctime)s | %(levelname)s | %(name)s | %(message)s\n"
+                    "Path: %(pathname)s:%(lineno)d",
+                ))
+                root_logger.addHandler(mail_handler)
+                logger.info("Error email notifications enabled")
+            except Exception as e:
+                logger.warning("Failed to set up email logging: %s", e)
 
         # Reduce noise from third-party libraries in production
         if self.is_production:

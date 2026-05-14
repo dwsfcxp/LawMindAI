@@ -23,6 +23,10 @@ def validate_file_type(filename: str) -> bool:
 
 async def extract_text(file_path: Path, llm_client=None, model: str = "glm-5.1") -> str:
     """从文件中提取文字内容。"""
+    if not file_path.exists():
+        return "[文件不存在]"
+    if file_path.stat().st_size == 0:
+        return "[文件为空]"
     suffix = file_path.suffix.lower()
     try:
         if suffix == ".pdf":

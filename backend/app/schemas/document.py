@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class TemplateCreate(BaseModel):
@@ -12,6 +12,21 @@ class TemplateCreate(BaseModel):
     variables: list[dict] | None = None
     is_public: bool = False
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "name": "民事起诉状模板",
+                    "type": "complaint",
+                    "description": "标准民事起诉状模板",
+                    "structure": {"sections": [{"name": "当事人信息", "required": True}]},
+                    "ai_prompt": "根据案件信息生成民事起诉状：{case_facts}",
+                    "is_public": False,
+                }
+            ]
+        }
+    }
+
 
 class TemplateUpdate(BaseModel):
     name: str | None = None
@@ -21,6 +36,14 @@ class TemplateUpdate(BaseModel):
     format_rules: dict | None = None
     variables: list[dict] | None = None
     is_public: bool | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"name": "更新后的模板名", "description": "更新后的描述"}
+            ]
+        }
+    }
 
 
 class TemplateOut(BaseModel):
@@ -49,6 +72,33 @@ class DocumentGenerate(BaseModel):
     extra_instructions: str | None = None
     research_report_ids: list[int] | None = None
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "type": "complaint",
+                    "title": "民事起诉状",
+                    "case_facts": "原告张三与被告李四于2024年签订借款合同，被告未按期还款。",
+                    "extra_instructions": "请重点引用《民法典》相关规定",
+                }
+            ]
+        }
+    }
+
+    @field_validator("type")
+    @classmethod
+    def type_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("文书类型不能为空")
+        return v.strip()
+
+    @field_validator("case_facts")
+    @classmethod
+    def case_facts_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("案件事实不能为空")
+        return v.strip()
+
 
 class DocumentBundleGenerate(BaseModel):
     """多文书集合生成请求"""
@@ -65,6 +115,14 @@ class DocumentUpdate(BaseModel):
     title: str | None = None
     content: str | None = None
     status: str | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"title": "修改后的标题", "status": "draft"}
+            ]
+        }
+    }
 
 
 class DocumentOut(BaseModel):
@@ -87,3 +145,11 @@ class DocumentOut(BaseModel):
 
 class DocumentExport(BaseModel):
     format: str = "docx"  # docx / markdown / html / pdf
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"format": "docx"}
+            ]
+        }
+    }

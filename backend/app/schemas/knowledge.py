@@ -1,7 +1,7 @@
 """知识库管理 Schema"""
 
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class KnowledgeCreate(BaseModel):
@@ -10,6 +10,20 @@ class KnowledgeCreate(BaseModel):
     source: str | None = None
     tags: list[str] | None = None
     team_id: int | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("标题不能为空")
+        return v.strip()
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("内容不能为空")
+        return v.strip()
 
 
 class KnowledgeUpdate(BaseModel):

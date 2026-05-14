@@ -73,6 +73,21 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
     Includes slow-query detection: queries taking longer than 2 seconds
     are logged as warnings.
+
+    Optimization notes for common query patterns:
+    - Case listing: filtered by owner_id + status + case_type with pagination.
+      EXPLAIN ANALYZE hint: ensure ix_cases_owner_status and ix_cases_owner_type
+      composite indexes are used; verify with EXPLAIN on:
+        SELECT * FROM cases WHERE owner_id = ? AND status = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?
+    - Document listing: filtered by owner_id + case_id with content truncation.
+      EXPLAIN ANALYZE hint: ix_documents_owner_case composite index covers:
+        SELECT * FROM documents WHERE owner_id = ? AND case_id = ? ORDER BY updated_at DESC
+    - Evidence chain analysis: ordered by case_id + sort_order.
+      EXPLAIN ANALYZE hint: ix_evidences_case_sort covers:
+        SELECT * FROM evidences WHERE case_id = ? ORDER BY sort_order, created_at DESC
+    - Knowledge duplicate detection: lookup by owner_id + title.
+      EXPLAIN ANALYZE hint: ix_knowledge_items_owner_title covers:
+        SELECT * FROM knowledge_items WHERE owner_id = ? AND title = ?
     """
     session_id = id(object())  # lightweight unique-ish id for log correlation
     logger.debug("DB session opened: sid=%s", session_id)

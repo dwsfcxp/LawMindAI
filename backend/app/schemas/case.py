@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class CaseCreate(BaseModel):
@@ -13,6 +13,20 @@ class CaseCreate(BaseModel):
     filing_date: str | None = None
     hearing_dates: list[str] | None = None
     deadline_dates: list[str] | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("案件标题不能为空")
+        return v.strip()
+
+    @field_validator("case_type")
+    @classmethod
+    def case_type_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("案件类型不能为空")
+        return v.strip()
 
 
 class CaseUpdate(BaseModel):

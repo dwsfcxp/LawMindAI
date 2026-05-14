@@ -3,8 +3,11 @@
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+
+from app.core.security import get_current_user, require_admin
+from app.models.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,3 +87,11 @@ async def health_check():
             },
         },
     )
+
+
+@router.get("/performance")
+async def performance_stats(current_user: User = Depends(get_current_user)):
+    """Return performance monitoring statistics. Admin only."""
+    require_admin(current_user)
+    from app.core.monitoring import get_performance_summary
+    return get_performance_summary()

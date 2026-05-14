@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Plus, Filter, Briefcase } from 'lucide-react';
-import { caseApi } from '@/lib/api';
-import type { Case, CaseCreate } from '@/lib/api';
+import {
+  Plus, Filter, Briefcase, Search, X, ChevronLeft, ChevronRight,
+  ArrowLeft, Calendar, Users, FileText, Loader2, AlertCircle, CheckCircle2,
+} from 'lucide-react';
+import { caseApi, documentApi } from '@/lib/api';
+import type { Case, CaseCreate, Document } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 const CASE_TYPES = [
   { value: '', label: '全部类型' },
@@ -21,6 +25,16 @@ const STATUS_OPTIONS = [
   { value: 'closed', label: '已结案' },
   { value: 'archived', label: '已归档' },
 ];
+
+const STATUS_TRANSITIONS: Record<string, { value: string; label: string }[]> = {
+  draft: [{ value: 'active', label: '开始处理' }],
+  active: [
+    { value: 'closed', label: '结案' },
+    { value: 'archived', label: '归档' },
+  ],
+  closed: [{ value: 'archived', label: '归档' }],
+  archived: [{ value: 'active', label: '重新激活' }],
+};
 
 const statusLabel: Record<string, string> = {
   draft: '草稿',
@@ -46,12 +60,23 @@ const statusColor: Record<string, string> = {
   archived: 'bg-yellow-100 text-yellow-700',
 };
 
+const PAGE_SIZE = 12;
+
 export default function Cases() {
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Pagination
+  const [page, setPage] = useState(1);
+
+  // Case detail view
+  const [selectedCase, setSelectedCase] = useState<Case | null>(null);
+  const [caseDocs, setCaseDocs] = useState<Document[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   // Create dialog state
   const [showCreate, setShowCreate] = useState(false);
@@ -62,6 +87,9 @@ export default function Cases() {
   });
   const [creating, setCreating] = useState(false);
 
+  // Status update state
+  const [updatingStatus, setUpdatingStatus] = useState<number | null>(null);
+
   const fetchCases = async () => {
     setLoading(true);
     setError('');
@@ -69,7 +97,7 @@ export default function Cases() {
       const data = await caseApi.list({
         status: statusFilter || undefined,
         case_type: typeFilter || undefined,
-        limit: 50,
+        limit: 1000,
       });
       setCases(data);
     } catch {
@@ -83,9 +111,57 @@ export default function Cases() {
     fetchCases();
   }, [statusFilter, typeFilter]);
 
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, typeFilter, searchQuery]);
+
+  // Filter by search query
+  const filteredCases = searchQuery.trim()
+    ? cases.filter((c) =>
+        c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.description && c.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        (c.case_number && c.case_number.toLowerCase().includes(searchQuery.toLowerCase()))
+      )
+    : cases;
+
+  const totalPages = Math.max(1, Math.ceil(filteredCases.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedCases = filteredCases.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const openCaseDetail = async (c: Case) => {
+    setSelectedCase(c);
+    setDetailLoading(true);
+    try {
+      const docs = await documentApi.list({ case_id: c.id, limit: 50 });
+      setCaseDocs(docs);
+    } catch {
+      setCaseDocs([]);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleStatusUpdate = async (caseId: number, newStatus: string) => {
+    setUpdatingStatus(caseId);
+    setError('');
+    try {
+      const updated = await caseApi.update(caseId, { status: newStatus });
+      setCases((prev) => prev.map((c) => (c.id === caseId ? updated : c)));
+      if (selectedCase?.id === caseId) {
+        setSelectedCase(updated);
+      }
+    } catch {
+      setError('更新案件状态失败，请重试');
+    } finally {
+      setUpdatingStatus(null);
+    }
+  };
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
+    setError('');
     try {
       await caseApi.create(createForm);
       setShowCreate(false);
@@ -103,13 +179,154 @@ export default function Cases() {
     return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
   };
 
+  // ── Case Detail View ─────────────────────────────────────────────
+  if (selectedCase) {
+    return (
+      <div className="mx-auto max-w-4xl space-y-6">
+        <button
+          onClick={() => setSelectedCase(null)}
+          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          返回案件列表
+        </button>
+
+        <div className="rounded-xl border bg-card shadow-sm">
+          <div className="border-b px-6 py-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h1 className="text-xl font-bold">{selectedCase.title}</h1>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <Briefcase className="h-3.5 w-3.5" />
+                    {caseTypeLabel[selectedCase.case_type] || selectedCase.case_type}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Calendar className="h-3.5 w-3.5" />
+                    创建于 {formatDate(selectedCase.created_at)}
+                  </span>
+                  {selectedCase.case_number && (
+                    <span>案号：{selectedCase.case_number}</span>
+                  )}
+                </div>
+              </div>
+              <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${statusColor[selectedCase.status] || 'bg-gray-100 text-gray-700'}`}>
+                {statusLabel[selectedCase.status] || selectedCase.status}
+              </span>
+            </div>
+          </div>
+
+          {/* Status transition actions */}
+          {STATUS_TRANSITIONS[selectedCase.status] && (
+            <div className="border-b px-6 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">操作：</span>
+                {STATUS_TRANSITIONS[selectedCase.status].map((trans) => (
+                  <button
+                    key={trans.value}
+                    onClick={() => handleStatusUpdate(selectedCase.id, trans.value)}
+                    disabled={updatingStatus === selectedCase.id}
+                    className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                  >
+                    {updatingStatus === selectedCase.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-3 w-3" />
+                    )}
+                    {trans.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Details */}
+          <div className="space-y-4 px-6 py-5">
+            {selectedCase.description && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-semibold">案件描述</h3>
+                <p className="text-sm leading-relaxed text-muted-foreground">{selectedCase.description}</p>
+              </div>
+            )}
+
+            {(selectedCase.plaintiff || selectedCase.defendant) && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-semibold">当事人</h3>
+                <div className="flex items-center gap-4 text-sm">
+                  {selectedCase.plaintiff && (
+                    <span className="flex items-center gap-1">
+                      <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                      原告：{selectedCase.plaintiff}
+                    </span>
+                  )}
+                  {selectedCase.defendant && (
+                    <span className="flex items-center gap-1">
+                      <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                      被告：{selectedCase.defendant}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selectedCase.court && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-semibold">审理法院</h3>
+                <p className="text-sm text-muted-foreground">{selectedCase.court}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Related Documents */}
+        <div className="rounded-xl border bg-card shadow-sm">
+          <div className="flex items-center justify-between border-b px-6 py-4">
+            <h2 className="font-semibold">相关文书</h2>
+            <span className="text-xs text-muted-foreground">{caseDocs.length} 份文书</span>
+          </div>
+          {detailLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          ) : caseDocs.length === 0 ? (
+            <p className="px-6 py-8 text-center text-sm text-muted-foreground">暂无相关文书</p>
+          ) : (
+            <div className="divide-y">
+              {caseDocs.map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between px-6 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{doc.title}</p>
+                    <p className="text-xs text-muted-foreground">{formatDate(doc.created_at)}</p>
+                  </div>
+                  <span className="ml-3 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-secondary-foreground">
+                    {statusLabel[doc.status] || doc.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <p>{error}</p>
+            <button onClick={() => setError('')} className="ml-auto shrink-0 hover:text-red-900">&times;</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Case List View ───────────────────────────────────────────────
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">案件管理</h1>
-          <p className="mt-1 text-sm text-muted-foreground">共 {cases.length} 个案件</p>
+          <p className="mt-1 text-sm text-muted-foreground">共 {filteredCases.length} 个案件</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -123,81 +340,182 @@ export default function Cases() {
       {/* Error */}
       {error && (
         <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertCircle className="h-4 w-4 shrink-0" />
           <p>{error}</p>
           <button onClick={() => setError('')} className="ml-auto shrink-0 hover:text-red-900">&times;</button>
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex items-center gap-3">
-        <Filter className="h-4 w-4 text-muted-foreground" />
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
-        >
-          {STATUS_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
-        >
-          {CASE_TYPES.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+      {/* Search + Filters */}
+      <div className="space-y-3">
+        {/* Search bar */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索案件标题、描述或案号..."
+            className="w-full rounded-lg border border-input bg-background py-2.5 pl-10 pr-10 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Filter dropdowns */}
+        <div className="flex items-center gap-3">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
+          >
+            {STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
+          >
+            {CASE_TYPES.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* Case List */}
       {loading ? (
         <div className="flex h-40 items-center justify-center">
-          <svg className="h-6 w-6 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
-      ) : cases.length === 0 ? (
+      ) : filteredCases.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border bg-card py-16">
           <Briefcase className="mb-3 h-12 w-12 text-muted-foreground/40" />
-          <p className="text-sm text-muted-foreground">暂无案件，点击"新建案件"开始</p>
+          {searchQuery ? (
+            <>
+              <p className="text-sm text-muted-foreground">未找到匹配 "{searchQuery}" 的案件</p>
+              <button
+                onClick={() => setSearchQuery('')}
+                className="mt-2 text-sm text-primary hover:underline"
+              >
+                清除搜索
+              </button>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">暂无案件，点击"新建案件"开始</p>
+          )}
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {cases.map((c) => (
-            <div
-              key={c.id}
-              className="group rounded-xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
-            >
-              <div className="mb-3 flex items-start justify-between">
-                <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{c.title}</h3>
-                <span
-                  className={`ml-2 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColor[c.status] || 'bg-gray-100 text-gray-700'}`}
-                >
-                  {statusLabel[c.status] || c.status}
-                </span>
-              </div>
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p>
-                  类型：
-                  <span className="font-medium text-foreground">
-                    {caseTypeLabel[c.case_type] || c.case_type}
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {pagedCases.map((c) => (
+              <div
+                key={c.id}
+                onClick={() => openCaseDetail(c)}
+                className="group cursor-pointer rounded-xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
+              >
+                <div className="mb-3 flex items-start justify-between">
+                  <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{c.title}</h3>
+                  <span
+                    className={`ml-2 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColor[c.status] || 'bg-gray-100 text-gray-700'}`}
+                  >
+                    {statusLabel[c.status] || c.status}
                   </span>
-                </p>
-                <p>创建：{formatDate(c.created_at)}</p>
-                {c.description && (
-                  <p className="line-clamp-2 pt-1">{c.description}</p>
+                </div>
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  <p>
+                    类型：
+                    <span className="font-medium text-foreground">
+                      {caseTypeLabel[c.case_type] || c.case_type}
+                    </span>
+                  </p>
+                  <p>创建：{formatDate(c.created_at)}</p>
+                  {c.description && (
+                    <p className="line-clamp-2 pt-1">{c.description}</p>
+                  )}
+                </div>
+                {/* Inline status update buttons */}
+                {STATUS_TRANSITIONS[c.status] && (
+                  <div className="mt-3 flex gap-1.5 border-t pt-3">
+                    {STATUS_TRANSITIONS[c.status].map((trans) => (
+                      <button
+                        key={trans.value}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleStatusUpdate(c.id, trans.value);
+                        }}
+                        disabled={updatingStatus === c.id}
+                        className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                      >
+                        {updatingStatus === c.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : null}
+                        {trans.label}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs text-muted-foreground">
+                第 {safePage} / {totalPages} 页，共 {filteredCases.length} 条
+              </p>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="rounded-md border p-2 transition-colors hover:bg-accent disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
+                  .map((p, idx, arr) => (
+                    <span key={p} className="flex items-center">
+                      {idx > 0 && arr[idx - 1] !== p - 1 && (
+                        <span className="px-1 text-xs text-muted-foreground">...</span>
+                      )}
+                      <button
+                        onClick={() => setPage(p)}
+                        className={cn(
+                          'min-w-[32px] rounded-md border px-2 py-1 text-xs font-medium transition-colors',
+                          p === safePage
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'hover:bg-accent',
+                        )}
+                      >
+                        {p}
+                      </button>
+                    </span>
+                  ))}
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="rounded-md border p-2 transition-colors hover:bg-accent disabled:opacity-40"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {/* Create Modal */}

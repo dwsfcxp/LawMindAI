@@ -1,13 +1,27 @@
-"""向量存储服务 — 基于ChromaDB的案例和法条向量检索"""
+"""Vector store service -- ChromaDB-backed vector search for cases, statutes,
+and knowledge items.
+
+Hardened with connection retry, mid-request unavailability handling, and
+collection stats caching.
+"""
 
 import asyncio
 import logging
+import time
 from typing import Optional
+
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 _vector_service = None
+
+# Retry settings for ChromaDB connection
+_CONNECT_MAX_RETRIES = 3
+_CONNECT_BACKOFF_BASE = 1.0  # seconds
+
+# Stats cache TTL
+_STATS_CACHE_TTL = 5.0  # seconds
 
 
 def get_vector_service() -> "VectorStoreService":
@@ -28,41 +42,77 @@ class VectorStoreService:
         self._cases_col = None
         self._statutes_col = None
         self._knowledge_col = None
+        # Stats cache: (timestamp, stats_dict)
+        self._stats_cache: tuple[float, dict] | None = None
 
-    def _ensure_connection(self):
+    # ── Connection management ────────────────────────────────────────────
+
+    def _ensure_connection(self) -> bool:
+        """Ensure ChromaDB is connected.  Uses retry with exponential backoff."""
         if self._client is not None:
             return True
-        try:
-            import chromadb
-            self._client = chromadb.HttpClient(
-                host=self._settings.CHROMA_HOST,
-                port=self._settings.CHROMA_PORT,
-            )
-            self._client.heartbeat()
-            self._cases_col = self._client.get_or_create_collection(
-                "legal_cases",
-                metadata={"hnsw:space": "cosine", "description": "法律案例向量库"},
-            )
-            self._statutes_col = self._client.get_or_create_collection(
-                "legal_statutes",
-                metadata={"hnsw:space": "cosine", "description": "法律法规向量库"},
-            )
-            self._knowledge_col = self._client.get_or_create_collection(
-                "knowledge",
-                metadata={"hnsw:space": "cosine", "description": "个人知识库"},
-            )
-            logger.info("ChromaDB connected, cases=%d, statutes=%d",
-                        self._cases_col.count(), self._statutes_col.count())
-            return True
-        except Exception as e:
-            logger.warning(f"ChromaDB connection failed: {e}")
-            self._client = None
-            return False
 
-    # ── 添加 ──────────────────────────────────────────────────────────
+        for attempt in range(_CONNECT_MAX_RETRIES):
+            try:
+                import chromadb
+                self._client = chromadb.HttpClient(
+                    host=self._settings.CHROMA_HOST,
+                    port=self._settings.CHROMA_PORT,
+                )
+                self._client.heartbeat()
+                self._cases_col = self._client.get_or_create_collection(
+                    "legal_cases",
+                    metadata={"hnsw:space": "cosine", "description": "法律案例向量库"},
+                )
+                self._statutes_col = self._client.get_or_create_collection(
+                    "legal_statutes",
+                    metadata={"hnsw:space": "cosine", "description": "法律法规向量库"},
+                )
+                self._knowledge_col = self._client.get_or_create_collection(
+                    "knowledge",
+                    metadata={"hnsw:space": "cosine", "description": "个人知识库"},
+                )
+                logger.info(
+                    "ChromaDB connected (attempt %d), cases=%d, statutes=%d",
+                    attempt + 1,
+                    self._cases_col.count(),
+                    self._statutes_col.count(),
+                )
+                # Invalidate stats cache on reconnection
+                self._stats_cache = None
+                return True
+            except Exception as e:
+                wait = min(_CONNECT_BACKOFF_BASE * (2 ** attempt), 10.0)
+                logger.warning(
+                    "ChromaDB connection attempt %d/%d failed: %s, retrying in %.1fs",
+                    attempt + 1,
+                    _CONNECT_MAX_RETRIES,
+                    e,
+                    wait,
+                )
+                # Reset client so next attempt starts fresh
+                self._client = None
+                if attempt < _CONNECT_MAX_RETRIES - 1:
+                    import time as _t
+                    _t.sleep(wait)
+
+        logger.error("ChromaDB connection failed after %d retries", _CONNECT_MAX_RETRIES)
+        self._client = None
+        return False
+
+    def _invalidate_connection(self) -> None:
+        """Mark the connection as lost so next call retries."""
+        logger.warning("ChromaDB connection invalidated -- will retry on next operation")
+        self._client = None
+        self._cases_col = None
+        self._statutes_col = None
+        self._knowledge_col = None
+        self._stats_cache = None
+
+    # ── Add ───────────────────────────────────────────────────────────────
 
     async def add_cases(self, items: list[dict]) -> int:
-        """批量添加案例。每个item: {id, title, content, metadata?}"""
+        """Batch-add cases."""
         if not self._ensure_connection() or not items:
             return 0
         ids = [str(it["id"]) for it in items]
@@ -70,13 +120,15 @@ class VectorStoreService:
         metas = [it.get("metadata", {}) for it in items]
         try:
             await asyncio.to_thread(self._cases_col.upsert, ids=ids, documents=docs, metadatas=metas)
+            self._stats_cache = None  # invalidate
             return len(ids)
         except Exception as e:
-            logger.error(f"Add cases failed: {e}")
+            logger.error("Add cases failed: %s", e)
+            self._invalidate_connection()
             return 0
 
     async def add_statutes(self, items: list[dict]) -> int:
-        """批量添加法条。每个item: {id, title, content, metadata?}"""
+        """Batch-add statutes."""
         if not self._ensure_connection() or not items:
             return 0
         ids = [str(it["id"]) for it in items]
@@ -84,17 +136,20 @@ class VectorStoreService:
         metas = [it.get("metadata", {}) for it in items]
         try:
             await asyncio.to_thread(self._statutes_col.upsert, ids=ids, documents=docs, metadatas=metas)
+            self._stats_cache = None
             return len(ids)
         except Exception as e:
-            logger.error(f"Add statutes failed: {e}")
+            logger.error("Add statutes failed: %s", e)
+            self._invalidate_connection()
             return 0
 
-    # ── 搜索 ──────────────────────────────────────────────────────────
+    # ── Search ────────────────────────────────────────────────────────────
 
     async def search_cases(self, query: str, top_k: int = 10, collection: str | None = None) -> list[dict]:
+        if not query or not query.strip():
+            return []
         if not self._ensure_connection():
             return []
-        # Route to knowledge collection if requested
         if collection == "knowledge" and self._knowledge_col is not None:
             return await self.search_knowledge(query, top_k)
         try:
@@ -104,20 +159,15 @@ class VectorStoreService:
             results = await asyncio.to_thread(
                 self._cases_col.query, query_texts=[query], n_results=min(top_k, count)
             )
-            items = []
-            for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
-                items.append({
-                    "id": results["ids"][0][i],
-                    "content": doc,
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "distance": results["distances"][0][i] if results["distances"] else 0,
-                })
-            return items
+            return self._parse_query_results(results)
         except Exception as e:
-            logger.warning(f"Search cases failed: {e}")
+            logger.warning("Search cases failed: %s", e)
+            self._invalidate_connection()
             return []
 
     async def search_statutes(self, query: str, top_k: int = 10) -> list[dict]:
+        if not query or not query.strip():
+            return []
         if not self._ensure_connection():
             return []
         try:
@@ -127,29 +177,24 @@ class VectorStoreService:
             results = await asyncio.to_thread(
                 self._statutes_col.query, query_texts=[query], n_results=min(top_k, count)
             )
-            items = []
-            for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
-                items.append({
-                    "id": results["ids"][0][i],
-                    "content": doc,
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "distance": results["distances"][0][i] if results["distances"] else 0,
-                })
-            return items
+            return self._parse_query_results(results)
         except Exception as e:
-            logger.warning(f"Search statutes failed: {e}")
+            logger.warning("Search statutes failed: %s", e)
+            self._invalidate_connection()
             return []
 
-    # ── 删除 ──────────────────────────────────────────────────────────
+    # ── Delete ────────────────────────────────────────────────────────────
 
     async def delete_cases(self, ids: list[str]) -> bool:
         if not self._ensure_connection():
             return False
         try:
             await asyncio.to_thread(self._cases_col.delete, ids=ids)
+            self._stats_cache = None
             return True
         except Exception as e:
-            logger.warning(f"Delete cases failed: {e}")
+            logger.warning("Delete cases failed: %s", e)
+            self._invalidate_connection()
             return False
 
     async def delete_statutes(self, ids: list[str]) -> bool:
@@ -157,12 +202,16 @@ class VectorStoreService:
             return False
         try:
             await asyncio.to_thread(self._statutes_col.delete, ids=ids)
+            self._stats_cache = None
             return True
         except Exception as e:
-            logger.warning(f"Delete statutes failed: {e}")
+            logger.warning("Delete statutes failed: %s", e)
+            self._invalidate_connection()
             return False
 
     async def search_knowledge(self, query: str, top_k: int = 10) -> list[dict]:
+        if not query or not query.strip():
+            return []
         if not self._ensure_connection() or self._knowledge_col is None:
             return []
         try:
@@ -172,17 +221,10 @@ class VectorStoreService:
             results = await asyncio.to_thread(
                 self._knowledge_col.query, query_texts=[query], n_results=min(top_k, count)
             )
-            items = []
-            for i, doc in enumerate(results["documents"][0] if results["documents"] else []):
-                items.append({
-                    "id": results["ids"][0][i],
-                    "content": doc,
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "distance": results["distances"][0][i] if results["distances"] else 0,
-                })
-            return items
+            return self._parse_query_results(results)
         except Exception as e:
-            logger.warning(f"Search knowledge failed: {e}")
+            logger.warning("Search knowledge failed: %s", e)
+            self._invalidate_connection()
             return []
 
     async def add_knowledge(self, items: list[dict]) -> int:
@@ -192,10 +234,14 @@ class VectorStoreService:
         docs = [f"{it.get('title', '')}\n{it['content']}" for it in items]
         metas = [it.get("metadata", {}) for it in items]
         try:
-            await asyncio.to_thread(self._knowledge_col.upsert, ids=ids, documents=docs, metadatas=metas)
+            await asyncio.to_thread(
+                self._knowledge_col.upsert, ids=ids, documents=docs, metadatas=metas
+            )
+            self._stats_cache = None
             return len(ids)
         except Exception as e:
-            logger.error(f"Add knowledge failed: {e}")
+            logger.error("Add knowledge failed: %s", e)
+            self._invalidate_connection()
             return 0
 
     async def delete_knowledge(self, ids: list[str]) -> bool:
@@ -203,25 +249,63 @@ class VectorStoreService:
             return False
         try:
             await asyncio.to_thread(self._knowledge_col.delete, ids=ids)
+            self._stats_cache = None
             return True
         except Exception as e:
-            logger.warning(f"Delete knowledge failed: {e}")
+            logger.warning("Delete knowledge failed: %s", e)
+            self._invalidate_connection()
             return False
 
-    # ── 统计 ──────────────────────────────────────────────────────────
+    # ── Stats (with caching) ─────────────────────────────────────────────
 
     async def get_stats(self) -> dict:
+        """Return collection stats with a 5-second cache to avoid repeated
+        ``.count()`` calls on ChromaDB.
+        """
+        now = time.monotonic()
+        if self._stats_cache is not None:
+            cache_ts, cached = self._stats_cache
+            if now - cache_ts < _STATS_CACHE_TTL:
+                return cached
+
         if not self._ensure_connection():
             return {"cases_count": 0, "statutes_count": 0, "connected": False}
         try:
             cases_count = await asyncio.to_thread(self._cases_col.count)
             statutes_count = await asyncio.to_thread(self._statutes_col.count)
-            knowledge_count = await asyncio.to_thread(self._knowledge_col.count) if self._knowledge_col else 0
-            return {
+            knowledge_count = (
+                await asyncio.to_thread(self._knowledge_col.count)
+                if self._knowledge_col
+                else 0
+            )
+            stats = {
                 "cases_count": cases_count,
                 "statutes_count": statutes_count,
                 "knowledge_count": knowledge_count,
                 "connected": True,
             }
+            self._stats_cache = (now, stats)
+            return stats
         except Exception:
+            self._invalidate_connection()
             return {"cases_count": 0, "statutes_count": 0, "knowledge_count": 0, "connected": False}
+
+    # ── Internal helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_query_results(results: dict) -> list[dict]:
+        """Parse ChromaDB query results into a list of dicts."""
+        items: list[dict] = []
+        documents = results.get("documents") or [[]]
+        ids_list = results.get("ids") or [[]]
+        metas_list = results.get("metadatas") or [[]]
+        dists_list = results.get("distances") or [[]]
+
+        for i, doc in enumerate(documents[0] if documents else []):
+            items.append({
+                "id": ids_list[0][i] if i < len(ids_list[0]) else str(i),
+                "content": doc,
+                "metadata": metas_list[0][i] if i < len(metas_list[0]) else {},
+                "distance": dists_list[0][i] if i < len(dists_list[0]) else 0,
+            })
+        return items

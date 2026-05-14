@@ -10,6 +10,7 @@ from app.services.llm_client import create_llm_client, create_llm_client_from_se
 from app.schemas.search import (
     UnifiedSearchResult, LawSearchResult, CaseSearchResult,
 )
+from app.core.monitoring import timed
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ def _dedupe_cases(items: list[CaseSearchResult]) -> list[CaseSearchResult]:
 
 class UnifiedSearchService:
 
+    @timed("search:unified", slow_threshold_ms=2000)
     async def search(
         self,
         query: str,

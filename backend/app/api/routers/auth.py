@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import (
     hash_password, verify_password, create_access_token, get_current_user,
-    check_rate_limit, validate_password_strength, require_admin,
+    check_rate_limit, check_rate_limit_with_headers, validate_password_strength, require_admin,
 )
 from app.models.user import User
 from app.schemas.auth import UserRegister, UserLogin, Token, UserOut, UserUpdate
@@ -25,8 +25,15 @@ async def register(
 ):
     # Rate limit registration per IP
     client_ip = request.client.host if request.client else "unknown"
-    if not check_rate_limit(f"register:{client_ip}", max_requests=5, window_seconds=300):
-        raise HTTPException(429, "注册请求过于频繁，请5分钟后再试")
+    allowed, rl_headers = check_rate_limit_with_headers(
+        f"register:{client_ip}", max_requests=5, window_seconds=300
+    )
+    if not allowed:
+        raise HTTPException(
+            429,
+            "注册请求过于频繁，请5分钟后再试",
+            headers=rl_headers,
+        )
 
     # Password strength validation
     is_strong, pw_error = validate_password_strength(data.password)
@@ -62,8 +69,15 @@ async def login(
 ):
     # Rate limit login per IP
     client_ip = request.client.host if request.client else "unknown"
-    if not check_rate_limit(f"login:{client_ip}", max_requests=10, window_seconds=60):
-        raise HTTPException(429, "登录请求过于频繁，请稍后再试")
+    allowed, rl_headers = check_rate_limit_with_headers(
+        f"login:{client_ip}", max_requests=10, window_seconds=60
+    )
+    if not allowed:
+        raise HTTPException(
+            429,
+            "登录请求过于频繁，请稍后再试",
+            headers=rl_headers,
+        )
 
     try:
         result = await db.execute(select(User).where(User.email == data.email))

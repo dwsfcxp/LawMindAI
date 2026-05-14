@@ -1,7 +1,7 @@
 """LLM配置管理 Schema"""
 
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class LLMSettingsCreate(BaseModel):
@@ -11,6 +11,27 @@ class LLMSettingsCreate(BaseModel):
     model_name: str = "glm-5.1"
     max_tokens: int = 4096
     is_default: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("配置名称不能为空")
+        return v.strip()
+
+    @field_validator("base_url")
+    @classmethod
+    def base_url_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("API地址不能为空")
+        return v.strip().rstrip("/")
+
+    @field_validator("max_tokens")
+    @classmethod
+    def max_tokens_range(cls, v):
+        if v < 1 or v > 32768:
+            raise ValueError("max_tokens 必须在 1-32768 之间")
+        return v
 
 
 class LLMSettingsUpdate(BaseModel):

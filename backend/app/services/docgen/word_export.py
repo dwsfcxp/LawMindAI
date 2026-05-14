@@ -9,7 +9,7 @@
 - 二级标题（###）：楷体 16pt（三号）加粗
 - 行距：固定值28.8pt
 - 首行缩进：2字符（约0.74cm）
-- 页码：底部居中
+- 页码：底部居中，首页不同
 """
 
 import asyncio
@@ -29,9 +29,12 @@ COURT_FONT_SETTINGS = {
     "title_font": "方正小标宋简体",
     "title_font_alt": "FZXiaoBiaoSong-B05S",
     "heading1_font": "黑体",
+    "heading1_font_fallback": "SimHei",
     "heading2_font": "楷体",
+    "heading2_font_fallback": "KaiTi",
     "body_font": "仿宋_GB2312",
     "body_font_fallback": "仿宋",
+    "body_font_fallback2": "FangSong",
     "body_font_en": "Times New Roman",
     "title_size": 22,       # 小二号
     "body_size": 16,        # 三号
@@ -45,9 +48,27 @@ COURT_FONT_SETTINGS = {
     "margin_left": 2.8,
 }
 
+# Safe filename characters for Unicode
+_SAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# XML-unsafe characters that can corrupt Word documents
+_XML_UNSAFE_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+
+# Maximum paragraph length before forcing a page break protection split
+_MAX_PARAGRAPH_CHARS = 8000
+
+
+def _sanitize_xml_text(text: str) -> str:
+    """Remove characters that are invalid in XML and would corrupt Word documents."""
+    if not text:
+        return ""
+    # Remove control characters except \t (\x09), \n (\x0a), \r (\x0d)
+    cleaned = _XML_UNSAFE_RE.sub("", text)
+    return cleaned
+
 
 def _setup_page(doc: Document):
-    """设置页面格式：法院标准A4页边距。"""
+    """设置页面格式：法院标准A4页边距 + 首页不同页码。"""
     for section in doc.sections:
         section.page_width = Cm(21.0)    # A4
         section.page_height = Cm(29.7)   # A4
@@ -56,12 +77,15 @@ def _setup_page(doc: Document):
         section.left_margin = Cm(COURT_FONT_SETTINGS["margin_left"])
         section.right_margin = Cm(COURT_FONT_SETTINGS["margin_right"])
 
-        # 设置页码（底部居中）
+        # 设置页码（底部居中，首页不同）
         _add_page_number(section)
+
+        # Enable different first page header/footer
+        section.different_first_page_header_footer = True
 
 
 def _add_page_number(section):
-    """添加页码（底部居中），格式为"— 1 —"。"""
+    """添加页码（底部居中），格式为"— 1 —"。支持首页不同。"""
     footer = section.footer
     footer.is_linked_to_previous = False
     p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
@@ -98,9 +122,15 @@ def _add_page_number(section):
     run_suffix.font.size = Pt(10)
     run_suffix.font.name = "Times New Roman"
 
+    # First page footer: leave empty (no page number on first page)
+    first_footer = section.first_page_footer
+    first_footer.is_linked_to_previous = False
+    if not first_footer.paragraphs:
+        first_footer.add_paragraph()
+
 
 def _set_run_font(run, font_name: str, size_pt: float, bold: bool = False, east_asia: str | None = None):
-    """统一设置run的字体属性。"""
+    """统一设置run的字体属性，包含fallback字体链。"""
     run.font.size = Pt(size_pt)
     run.font.name = COURT_FONT_SETTINGS["body_font_en"]
     run.bold = bold
@@ -120,6 +150,11 @@ def _set_run_font(run, font_name: str, size_pt: float, bold: bool = False, east_
     rFonts.set(qn("w:eastAsia"), east_asia_font)
     rFonts.set(qn("w:ascii"), COURT_FONT_SETTINGS["body_font_en"])
     rFonts.set(qn("w:hAnsi"), COURT_FONT_SETTINGS["body_font_en"])
+    # Set comprehensive fallback fonts for cross-platform compatibility
+    rFonts.set(qn("w:eastAsiaTheme"), "minorEastAsia")
+    # Hint attribute for additional fallback
+    if not rFonts.get(qn("w:cs")):
+        rFonts.set(qn("w:cs"), COURT_FONT_SETTINGS["body_font_en"])
 
 
 def _set_paragraph_format(p, first_line_indent: bool = True, alignment=None, line_spacing: float | None = None):
@@ -136,10 +171,14 @@ def _set_paragraph_format(p, first_line_indent: bool = True, alignment=None, lin
 
 def _add_title(doc: Document, text: str):
     """添加文书标题：方正小标宋 22pt，居中。"""
+    safe_text = _sanitize_xml_text(text)
+    if not safe_text:
+        safe_text = "文书"
+
     p = doc.add_paragraph()
     _set_paragraph_format(p, first_line_indent=False, alignment=WD_ALIGN_PARAGRAPH.CENTER)
 
-    run = p.add_run(text)
+    run = p.add_run(safe_text)
     _set_run_font(run, COURT_FONT_SETTINGS["title_font"], COURT_FONT_SETTINGS["title_size"], bold=True,
                   east_asia=COURT_FONT_SETTINGS["title_font"])
 
@@ -149,8 +188,11 @@ def _add_title(doc: Document, text: str):
 
 
 def _parse_inline_formatting(p, text: str):
-    """解析并添加行内格式（加粗）到段落。"""
-    parts = text.split("**")
+    """解析并添加行内格式（加粗）到段落。所有文本经过XML安全处理。"""
+    safe_text = _sanitize_xml_text(text)
+    if not safe_text:
+        return
+    parts = safe_text.split("**")
     for i, part in enumerate(parts):
         if not part:
             continue
@@ -158,6 +200,37 @@ def _parse_inline_formatting(p, text: str):
         is_bold = (i % 2 == 1)
         _set_run_font(run, COURT_FONT_SETTINGS["body_font"], COURT_FONT_SETTINGS["body_size"], bold=is_bold,
                       east_asia=COURT_FONT_SETTINGS["body_font"])
+
+
+def _split_long_paragraph(text: str, max_chars: int = _MAX_PARAGRAPH_CHARS) -> list[str]:
+    """Split a very long paragraph into chunks at sentence boundaries.
+
+    This prevents Word from struggling with extremely long paragraphs
+    and provides implicit page-break protection.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+
+        # Try to split at a sentence boundary near the limit
+        split_pos = max_chars
+        # Look for Chinese sentence endings: 。！？；
+        for offset in range(min(200, max_chars)):
+            pos = max_chars - offset
+            if pos > 0 and pos < len(remaining) and remaining[pos] in "。！？；\n":
+                split_pos = pos + 1
+                break
+
+        chunks.append(remaining[:split_pos])
+        remaining = remaining[split_pos:]
+
+    return chunks
 
 
 def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: bool = True):
@@ -170,10 +243,19 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
     - **粗体** → 加粗
     - 普通段落 → 仿宋，首行缩进2字符
     - 空行 → 空段落（保持行距）
+
+    Handles edge cases:
+    - Documents with no headings (all plain text)
+    - Tables with inconsistent column counts per row
+    - Very long paragraphs (auto-split at sentence boundaries)
+    - Special characters that break XML
     """
     lines = content.split("\n")
     i = 0
     in_list = False
+
+    # Track whether any headings were found to handle heading-less documents
+    has_heading = False
 
     while i < len(lines):
         line = lines[i]
@@ -190,6 +272,7 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
 
         # 标题级别（#）— 居中
         if stripped.startswith("### "):
+            has_heading = True
             in_list = False
             p = doc.add_paragraph()
             _set_paragraph_format(p, first_line_indent=False)
@@ -203,6 +286,7 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
             continue
 
         if stripped.startswith("## "):
+            has_heading = True
             in_list = False
             p = doc.add_paragraph()
             _set_paragraph_format(p, first_line_indent=False)
@@ -216,6 +300,7 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
             continue
 
         if stripped.startswith("# "):
+            has_heading = True
             in_list = False
             p = doc.add_paragraph()
             _set_paragraph_format(p, first_line_indent=False, alignment=WD_ALIGN_PARAGRAPH.CENTER)
@@ -239,8 +324,9 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
             # 编号部分
             num_run = p.add_run(f"{num}. ")
             _set_run_font(num_run, COURT_FONT_SETTINGS["body_font"], COURT_FONT_SETTINGS["body_size"])
-            # 内容部分
-            _parse_inline_formatting(p, rest)
+            # 内容部分 — handle very long list items
+            for chunk in _split_long_paragraph(rest):
+                _parse_inline_formatting(p, chunk)
             i += 1
             continue
 
@@ -260,7 +346,7 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
         if stripped.startswith("|") and "|" in stripped[1:]:
             in_list = False
             # 收集连续表格行
-            table_lines = []
+            table_lines: list[list[str]] = []
             while i < len(lines) and lines[i].strip().startswith("|"):
                 stripped_line = lines[i].strip()
                 # 跳过分隔行
@@ -272,27 +358,44 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
                 i += 1
 
             if table_lines:
-                max_cols = max(len(row) for row in table_lines)
+                # Determine column count from the first (header) row if possible,
+                # otherwise use the max across all rows
+                max_cols = max(len(row) for row in table_lines) if table_lines else 0
+                if max_cols == 0:
+                    i += 1
+                    continue
+
+                # Normalize all rows to have exactly max_cols columns,
+                # padding short rows with empty strings
+                for row_idx in range(len(table_lines)):
+                    row = table_lines[row_idx]
+                    if len(row) < max_cols:
+                        table_lines[row_idx] = row + [""] * (max_cols - len(row))
+                    elif len(row) > max_cols:
+                        table_lines[row_idx] = row[:max_cols]
+
                 table = doc.add_table(rows=len(table_lines), cols=max_cols)
                 table.style = 'Table Grid'
                 for row_idx, row_data in enumerate(table_lines):
-                    for col_idx, cell_text in enumerate(row_data):
-                        if col_idx < max_cols:
-                            cell = table.cell(row_idx, col_idx)
-                            cell.text = ""
-                            p = cell.paragraphs[0]
-                            _set_paragraph_format(p, first_line_indent=False)
-                            run = p.add_run(cell_text)
-                            _set_run_font(run, COURT_FONT_SETTINGS["body_font"],
-                                          COURT_FONT_SETTINGS["body_size"],
-                                          bold=(row_idx == 0))
+                    for col_idx in range(max_cols):
+                        cell_text = row_data[col_idx] if col_idx < len(row_data) else ""
+                        cell_text = _sanitize_xml_text(cell_text)
+                        cell = table.cell(row_idx, col_idx)
+                        cell.text = ""
+                        p = cell.paragraphs[0]
+                        _set_paragraph_format(p, first_line_indent=False)
+                        run = p.add_run(cell_text)
+                        _set_run_font(run, COURT_FONT_SETTINGS["body_font"],
+                                      COURT_FONT_SETTINGS["body_size"],
+                                      bold=(row_idx == 0))
             continue
 
-        # 普通段落
+        # 普通段落 — split very long paragraphs for page break protection
         in_list = False
-        p = doc.add_paragraph()
-        _set_paragraph_format(p, first_line_indent=first_line_indent)
-        _parse_inline_formatting(p, stripped)
+        for chunk in _split_long_paragraph(stripped):
+            p = doc.add_paragraph()
+            _set_paragraph_format(p, first_line_indent=first_line_indent)
+            _parse_inline_formatting(p, chunk)
         i += 1
 
 
@@ -301,11 +404,21 @@ async def export_to_docx(doc_record, output_dir: Path) -> str:
     doc = Document()
     _setup_page(doc)
     _add_title(doc, doc_record.title)
-    _add_markdown_paragraphs(doc, doc_record.content, first_line_indent=True)
 
-    safe_title = "".join(c for c in doc_record.title if c.isalnum() or c in "（）()—_")
+    # Handle empty or missing content gracefully
+    content = getattr(doc_record, 'content', '') or ''
+    if not content.strip():
+        content = "（文档内容为空）"
+
+    _add_markdown_paragraphs(doc, content, first_line_indent=True)
+
+    safe_title = _SAFE_FILENAME_RE.sub("", doc_record.title)
+    if not safe_title:
+        safe_title = f"document_{doc_record.id}"
     filename = f"{doc_record.id}_{safe_title}.docx"
     filepath = output_dir / filename
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(doc.save, str(filepath))
     return str(filepath)
 
@@ -319,7 +432,10 @@ async def export_research_to_docx(report_record, output_dir: Path) -> str:
     # 元信息
     meta = doc.add_paragraph()
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = meta.add_run(f"生成时间：{report_record.created_at.strftime('%Y-%m-%d %H:%M')}　来源：{'、'.join(report_record.sources_used)}")
+    sources = getattr(report_record, 'sources_used', []) or []
+    created = getattr(report_record, 'created_at', None)
+    created_str = created.strftime('%Y-%m-%d %H:%M') if created else '未知时间'
+    run = meta.add_run(f"生成时间：{created_str}　来源：{'、'.join(sources)}")
     run.font.size = Pt(12)
     run.font.name = COURT_FONT_SETTINGS["body_font_fallback"]
     r = run._element
@@ -335,10 +451,19 @@ async def export_research_to_docx(report_record, output_dir: Path) -> str:
     run.font.color.rgb = RGBColor(128, 128, 128)
     _set_paragraph_format(meta, first_line_indent=False)
 
-    _add_markdown_paragraphs(doc, report_record.report, first_line_indent=False)
+    # Handle empty report gracefully
+    report_text = getattr(report_record, 'report', '') or ''
+    if not report_text.strip():
+        report_text = "（报告内容为空）"
 
-    safe_query = "".join(c for c in report_record.query[:30] if c.isalnum() or c in "（）()—_")
+    _add_markdown_paragraphs(doc, report_text, first_line_indent=False)
+
+    safe_query = _SAFE_FILENAME_RE.sub("", report_record.query[:30])
+    if not safe_query:
+        safe_query = f"report_{report_record.id}"
     filename = f"research_{report_record.id}_{safe_query}.docx"
     filepath = output_dir / filename
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(doc.save, str(filepath))
     return str(filepath)

@@ -1,8 +1,9 @@
 """外部API配置 Schema"""
 
+import json
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ExternalApiCreate(BaseModel):
@@ -26,6 +27,38 @@ class ExternalApiCreate(BaseModel):
     request_template: str = "{}"
     is_enabled: bool = True
     category: str = "custom"
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("API名称不能为空")
+        return v.strip()
+
+    @field_validator("base_url")
+    @classmethod
+    def base_url_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("API地址不能为空")
+        return v.strip().rstrip("/")
+
+    @field_validator("auth_type")
+    @classmethod
+    def auth_type_must_be_valid(cls, v):
+        valid = ("none", "bearer", "api_key", "basic")
+        if v not in valid:
+            raise ValueError(f"认证类型必须是: {', '.join(valid)}")
+        return v
+
+    @field_validator("custom_headers", "response_mapping", "request_template")
+    @classmethod
+    def must_be_valid_json(cls, v):
+        if v:
+            try:
+                json.loads(v)
+            except json.JSONDecodeError:
+                raise ValueError("必须是有效的JSON格式")
+        return v
 
 
 class ExternalApiUpdate(BaseModel):

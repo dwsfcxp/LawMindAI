@@ -22,8 +22,22 @@ async def verify_law(
     current_user: User = Depends(get_current_user),
 ):
     """单条法条核查 — 多源交叉验证"""
-    engine = LawVerificationEngine()
-    return await engine.verify_single(data)
+    if not data.law_name or not data.law_name.strip():
+        raise HTTPException(400, "法律名称不能为空")
+    if not data.article_number or not data.article_number.strip():
+        raise HTTPException(400, "条款号不能为空")
+    try:
+        import time
+        start = time.time()
+        engine = LawVerificationEngine()
+        result = await engine.verify_single(data)
+        logger.info(f"Law verification took {time.time()-start:.2f}s for {data.law_name} {data.article_number}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Law verification failed: {e}")
+        raise HTTPException(500, f"法条核查失败: {str(e)[:200]}")
 
 
 @router.post("/verify-batch", response_model=BatchVerifyResponse)
@@ -32,16 +46,24 @@ async def verify_batch(
     current_user: User = Depends(get_current_user),
 ):
     """批量核查 — 从文书内容中自动提取法条引用并验证"""
-    engine = LawVerificationEngine()
-    results = await engine.verify_document(data.document_content)
+    if not data.document_content or not data.document_content.strip():
+        raise HTTPException(400, "文书内容不能为空")
+    try:
+        engine = LawVerificationEngine()
+        results = await engine.verify_document(data.document_content)
 
-    warnings = []
-    for r in results:
-        if not r.overall_consistent:
-            warnings.append(f"{r.law_name} {r.article_number}: {r.recommendation}")
+        warnings = []
+        for r in results:
+            if not r.overall_consistent:
+                warnings.append(f"{r.law_name} {r.article_number}: {r.recommendation}")
 
-    return BatchVerifyResponse(
-        total_references=len(results),
-        verified=results,
-        warnings=warnings,
-    )
+        return BatchVerifyResponse(
+            total_references=len(results),
+            verified=results,
+            warnings=warnings,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Batch verification failed: {e}")
+        raise HTTPException(500, f"批量核查失败: {str(e)[:200]}")

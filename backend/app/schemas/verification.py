@@ -1,6 +1,6 @@
 """法条审核核查 Schema"""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class LawVerifyRequest(BaseModel):
@@ -8,6 +8,20 @@ class LawVerifyRequest(BaseModel):
     law_name: str  # 法律名称，如"民法典"
     article_number: str  # 条款号，如"第584条"
     content: str  # 待核查的法条内容
+
+    @field_validator("law_name")
+    @classmethod
+    def law_name_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("法律名称不能为空")
+        return v.strip()
+
+    @field_validator("article_number")
+    @classmethod
+    def article_number_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("条款号不能为空")
+        return v.strip()
 
 
 class LawVerifyResult(BaseModel):

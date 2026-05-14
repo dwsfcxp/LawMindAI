@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { type AxiosRequestConfig, type AxiosResponse, type CancelTokenSource } from 'axios';
 
 export const apiClient = axios.create({
   baseURL: '/api/v1',
@@ -8,7 +8,15 @@ export const apiClient = axios.create({
   },
 });
 
-// Request interceptor: attach JWT token
+// ── Timeout presets ────────────────────────────────────────────────────
+export const TIMEOUT = {
+  short: 15_000,    // GET endpoints (fast reads)
+  medium: 60_000,  // Standard mutations
+  long: 120_000,   // File uploads / exports
+  ai: 300_000,     // AI generation / review tasks
+} as const;
+
+// ── Request interceptor: attach JWT token ──────────────────────────────
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -22,19 +30,112 @@ apiClient.interceptors.request.use(
 
 let isRedirecting = false;
 
-// Response interceptor: handle 401
+// ── Response interceptor: handle 401 + retry on network error ─────────
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const originalRequest = error.config;
+
+    // Handle 401 — redirect to login
     if (error.response?.status === 401 && !isRedirecting) {
       isRedirecting = true;
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.location.href = '/login';
+      return Promise.reject(error);
     }
+
+    // Retry once on network errors (no response) if not already retried
+    if (!error.response && !originalRequest._retried) {
+      originalRequest._retried = true;
+      try {
+        return await apiClient(originalRequest);
+      } catch {
+        // second attempt failed, fall through to reject
+      }
+    }
+
     return Promise.reject(error);
   },
 );
+
+// ── Cancellation helpers ───────────────────────────────────────────────
+const cancelTokenSources = new Map<string, CancelTokenSource>();
+
+export function createCancelToken(key: string): CancelTokenSource {
+  // Cancel any previous request with the same key
+  const existing = cancelTokenSources.get(key);
+  if (existing) {
+    existing.cancel(`Cancelled by newer request: ${key}`);
+  }
+  const source = axios.CancelToken.source();
+  cancelTokenSources.set(key, source);
+  return source;
+}
+
+export function cancelRequest(key: string) {
+  const source = cancelTokenSources.get(key);
+  if (source) {
+    source.cancel(`Manually cancelled: ${key}`);
+    cancelTokenSources.delete(key);
+  }
+}
+
+// ── Request deduplication ──────────────────────────────────────────────
+const pendingRequests = new Map<string, Promise<any>>();
+
+/**
+ * Deduplicate concurrent GET requests with the same URL+params.
+ * If an identical request is already in-flight, returns the same Promise.
+ * Otherwise, makes the request and caches it until completion.
+ */
+export function dedupedGet<T>(url: string, params?: Record<string, any>, config?: AxiosRequestConfig): Promise<T> {
+  const cacheKey = `GET:${url}:${JSON.stringify(params || {})}`;
+  const existing = pendingRequests.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = apiClient.get(url, { params, ...config })
+    .then(res => res.data as T)
+    .finally(() => { pendingRequests.delete(cacheKey); });
+
+  pendingRequests.set(cacheKey, promise);
+  return promise;
+}
+
+// ── Response type validation ───────────────────────────────────────────
+export function validateResponse<T>(
+  data: unknown,
+  requiredKeys: (keyof T)[],
+): data is T {
+  if (typeof data !== 'object' || data === null) return false;
+  return requiredKeys.every((key) => key in data);
+}
+
+export function ensureTypedResponse<T>(
+  res: AxiosResponse,
+  requiredKeys: (keyof T)[],
+): T {
+  if (!validateResponse<T>(res.data, requiredKeys)) {
+    throw new Error('Unexpected response shape from server');
+  }
+  return res.data;
+}
+
+// ── Blob download helper ───────────────────────────────────────────────
+export async function downloadBlob(
+  fetchBlob: () => Promise<Blob>,
+  filename: string,
+): Promise<void> {
+  const blob = await fetchBlob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -109,10 +210,11 @@ export interface SearchResults {
 
 export const authApi = {
   login: async (email: string, password: string): Promise<{ access_token: string; user: any }> => {
-    const res = await apiClient.post('/auth/login', { email, password });
+    const res = await apiClient.post('/auth/login', { email, password }, { timeout: TIMEOUT.medium });
     const token = res.data.access_token;
     const userRes = await apiClient.get('/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
+      timeout: TIMEOUT.short,
     });
     return { access_token: token, user: userRes.data };
   },
@@ -122,20 +224,21 @@ export const authApi = {
     password: string;
     name: string;
   }): Promise<{ access_token: string; user: any }> => {
-    await apiClient.post('/auth/register', data);
+    await apiClient.post('/auth/register', data, { timeout: TIMEOUT.medium });
     const loginRes = await apiClient.post('/auth/login', {
       email: data.email,
       password: data.password,
-    });
+    }, { timeout: TIMEOUT.medium });
     const token = loginRes.data.access_token;
     const userRes = await apiClient.get('/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
+      timeout: TIMEOUT.short,
     });
     return { access_token: token, user: userRes.data };
   },
 
   getMe: async (): Promise<User> => {
-    const res = await apiClient.get('/auth/me');
+    const res = await apiClient.get('/auth/me', { timeout: TIMEOUT.short });
     return res.data;
   },
 };
@@ -149,22 +252,27 @@ export const caseApi = {
     skip?: number;
     limit?: number;
   }): Promise<Case[]> => {
-    const res = await apiClient.get('/cases', { params });
+    const res = await apiClient.get('/cases', { params, timeout: TIMEOUT.short });
     return res.data;
   },
 
   create: async (data: CaseCreate): Promise<Case> => {
-    const res = await apiClient.post('/cases', data);
+    const res = await apiClient.post('/cases', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   get: async (id: number): Promise<Case> => {
-    const res = await apiClient.get(`/cases/${id}`);
+    const res = await apiClient.get(`/cases/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
   update: async (id: number, data: Partial<CaseCreate & { status: string }>): Promise<Case> => {
-    const res = await apiClient.put(`/cases/${id}`, data);
+    const res = await apiClient.put(`/cases/${id}`, data, { timeout: TIMEOUT.medium });
+    return res.data;
+  },
+
+  analyze: async (id: number): Promise<{ case_id: number; analysis: string }> => {
+    const res = await apiClient.post(`/cases/${id}/analyze`, null, { timeout: TIMEOUT.ai });
     return res.data;
   },
 };
@@ -178,7 +286,7 @@ export const documentApi = {
     skip?: number;
     limit?: number;
   }): Promise<Document[]> => {
-    const res = await apiClient.get('/documents', { params });
+    const res = await apiClient.get('/documents', { params, timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -189,10 +297,12 @@ export const documentApi = {
     template_id?: number;
     extra_instructions?: string;
     research_report_ids?: number[];
-  }): Promise<Document> => {
-    const res = await apiClient.post('/documents/generate', data, {
-      timeout: 300000,
-    });
+  }, cancelKey?: string): Promise<Document> => {
+    const config: AxiosRequestConfig = { timeout: TIMEOUT.ai };
+    if (cancelKey) {
+      config.cancelToken = createCancelToken(cancelKey).token;
+    }
+    const res = await apiClient.post('/documents/generate', data, config);
     return res.data;
   },
 
@@ -201,24 +311,25 @@ export const documentApi = {
     formData.append('file', file);
     const res = await apiClient.post('/documents/extract-text', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
 
   get: async (id: number): Promise<Document> => {
-    const res = await apiClient.get(`/documents/${id}`);
+    const res = await apiClient.get(`/documents/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
   update: async (id: number, data: { title?: string; content?: string; status?: string }): Promise<Document> => {
-    const res = await apiClient.put(`/documents/${id}`, data);
+    const res = await apiClient.put(`/documents/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   exportWord: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/documents/${id}/export`, { format: 'docx' }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -226,6 +337,7 @@ export const documentApi = {
   exportMarkdown: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/documents/${id}/export`, { format: 'markdown' }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -233,6 +345,7 @@ export const documentApi = {
   exportHtml: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/documents/${id}/export`, { format: 'html' }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -240,7 +353,7 @@ export const documentApi = {
   exportPdf: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/documents/${id}/export`, { format: 'pdf' }, {
       responseType: 'blob',
-      timeout: 120000,
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -251,14 +364,44 @@ export const documentApi = {
     total: number;
   }> => {
     const res = await apiClient.post(`/documents/${id}/verify-laws`, null, {
-      timeout: 300000,
+      timeout: TIMEOUT.ai,
     });
     return res.data;
   },
 
   review: async (id: number): Promise<Document> => {
     const res = await apiClient.post(`/documents/${id}/review`, null, {
-      timeout: 300000,
+      timeout: TIMEOUT.ai,
+    });
+    return res.data;
+  },
+
+  generateBundle: async (data: {
+    case_id?: number;
+    doc_types?: string[];
+    preset?: string;
+    case_facts: string;
+    extra_instructions?: string;
+    research_report_ids?: number[];
+  }): Promise<{ documents: any[]; consistency_check: any; total: number }> => {
+    const res = await apiClient.post('/documents/generate-bundle', data, {
+      timeout: TIMEOUT.ai,
+    });
+    return res.data;
+  },
+
+  qualityCheck: async (id: number): Promise<{
+    document_id: number;
+    quality_check: {
+      passed: boolean;
+      issues: any[];
+      checks: any[];
+      quality_score: number;
+      summary: string;
+    };
+  }> => {
+    const res = await apiClient.post(`/documents/${id}/quality-check`, null, {
+      timeout: TIMEOUT.ai,
     });
     return res.data;
   },
@@ -268,27 +411,27 @@ export const documentApi = {
 
 export const templateApi = {
   list: async (params?: { type?: string }): Promise<Template[]> => {
-    const res = await apiClient.get('/templates', { params });
+    const res = await apiClient.get('/templates', { params, timeout: TIMEOUT.short });
     return res.data;
   },
 
   create: async (data: any): Promise<Template> => {
-    const res = await apiClient.post('/templates', data);
+    const res = await apiClient.post('/templates', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   get: async (id: number): Promise<Template> => {
-    const res = await apiClient.get(`/templates/${id}`);
+    const res = await apiClient.get(`/templates/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
   update: async (id: number, data: any): Promise<Template> => {
-    const res = await apiClient.put(`/templates/${id}`, data);
+    const res = await apiClient.put(`/templates/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/templates/${id}`);
+    await apiClient.delete(`/templates/${id}`, { timeout: TIMEOUT.medium });
   },
 };
 
@@ -300,7 +443,7 @@ export const searchApi = {
     result_type?: string;
     top_k?: number;
   }): Promise<SearchResults> => {
-    const res = await apiClient.post('/search', params);
+    const res = await apiClient.post('/search', params, { timeout: TIMEOUT.medium });
     return res.data;
   },
 };
@@ -323,7 +466,7 @@ export interface EvidenceItem {
 
 export const evidenceApi = {
   list: async (caseId: number): Promise<EvidenceItem[]> => {
-    const res = await apiClient.get('/evidence', { params: { case_id: caseId } });
+    const res = await apiClient.get('/evidence', { params: { case_id: caseId }, timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -333,7 +476,7 @@ export const evidenceApi = {
     title: string;
     tags?: string[];
   }): Promise<EvidenceItem> => {
-    const res = await apiClient.post('/evidence', data);
+    const res = await apiClient.post('/evidence', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
@@ -342,27 +485,40 @@ export const evidenceApi = {
     formData.append('file', file);
     const res = await apiClient.post(`/evidence/${id}/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
 
   get: async (id: number): Promise<EvidenceItem> => {
-    const res = await apiClient.get(`/evidence/${id}`);
+    const res = await apiClient.get(`/evidence/${id}`, { timeout: TIMEOUT.short });
+    return res.data;
+  },
+
+  update: async (id: number, data: {
+    title?: string;
+    type?: string;
+    tags?: string[];
+    sort_order?: number;
+  }): Promise<EvidenceItem> => {
+    const res = await apiClient.put(`/evidence/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/evidence/${id}`);
+    await apiClient.delete(`/evidence/${id}`, { timeout: TIMEOUT.medium });
   },
 
   analyze: async (id: number): Promise<EvidenceItem> => {
-    const res = await apiClient.post(`/evidence/${id}/analyze`, null, { timeout: 300000 });
+    const res = await apiClient.post(`/evidence/${id}/analyze`, null, { timeout: TIMEOUT.ai });
     return res.data;
   },
 
   download: async (id: number): Promise<void> => {
-    const res = await apiClient.get(`/evidence/${id}/download`, { responseType: 'blob' });
+    const res = await apiClient.get(`/evidence/${id}/download`, {
+      responseType: 'blob',
+      timeout: TIMEOUT.long,
+    });
     const url = window.URL.createObjectURL(res.data);
     const a = document.createElement('a');
     a.href = url;
@@ -397,7 +553,7 @@ export interface ConnectivityTestResult {
 
 export const llmSettingsApi = {
   list: async (): Promise<LLMSetting[]> => {
-    const res = await apiClient.get('/llm-settings');
+    const res = await apiClient.get('/llm-settings', { timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -409,7 +565,7 @@ export const llmSettingsApi = {
     max_tokens: number;
     is_default: boolean;
   }): Promise<LLMSetting> => {
-    const res = await apiClient.post('/llm-settings', data);
+    const res = await apiClient.post('/llm-settings', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
@@ -421,12 +577,12 @@ export const llmSettingsApi = {
     max_tokens?: number;
     is_default?: boolean;
   }): Promise<LLMSetting> => {
-    const res = await apiClient.put(`/llm-settings/${id}`, data);
+    const res = await apiClient.put(`/llm-settings/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/llm-settings/${id}`);
+    await apiClient.delete(`/llm-settings/${id}`, { timeout: TIMEOUT.medium });
   },
 
   testConnectivity: async (data: {
@@ -435,7 +591,12 @@ export const llmSettingsApi = {
     model_name: string;
     setting_id?: number;
   }): Promise<ConnectivityTestResult> => {
-    const res = await apiClient.post('/llm-settings/test-connectivity', data);
+    const res = await apiClient.post('/llm-settings/test-connectivity', data, { timeout: TIMEOUT.long });
+    return res.data;
+  },
+
+  presets: async (): Promise<any[]> => {
+    const res = await apiClient.get('/llm-settings/presets', { timeout: TIMEOUT.short });
     return res.data;
   },
 };
@@ -456,28 +617,33 @@ export const researchApi = {
     query: string;
     sources: string[];
     case_id?: number;
-  }): Promise<ResearchReport> => {
-    const res = await apiClient.post('/research', data, { timeout: 300000 });
+  }, cancelKey?: string): Promise<ResearchReport> => {
+    const config: AxiosRequestConfig = { timeout: TIMEOUT.ai };
+    if (cancelKey) {
+      config.cancelToken = createCancelToken(cancelKey).token;
+    }
+    const res = await apiClient.post('/research', data, config);
     return res.data;
   },
 
   list: async (skip?: number, limit?: number): Promise<ResearchReport[]> => {
-    const res = await apiClient.get('/research', { params: { skip, limit } });
+    const res = await apiClient.get('/research', { params: { skip, limit }, timeout: TIMEOUT.short });
     return res.data;
   },
 
   get: async (id: number): Promise<ResearchReport> => {
-    const res = await apiClient.get(`/research/${id}`);
+    const res = await apiClient.get(`/research/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/research/${id}`);
+    await apiClient.delete(`/research/${id}`, { timeout: TIMEOUT.medium });
   },
 
   exportWord: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/research/${id}/export`, { format: 'docx' }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -485,6 +651,7 @@ export const researchApi = {
   exportMarkdown: async (id: number): Promise<Blob> => {
     const res = await apiClient.post(`/research/${id}/export`, { format: 'markdown' }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
@@ -501,17 +668,17 @@ export interface VectorStats {
 
 export const vectorApi = {
   ingest: async (collection: string, items: any[]): Promise<any> => {
-    const res = await apiClient.post('/vector/ingest', { collection, items });
+    const res = await apiClient.post('/vector/ingest', { collection, items }, { timeout: TIMEOUT.long });
     return res.data;
   },
 
   search: async (query: string, collection: string = 'all', top_k: number = 10): Promise<any> => {
-    const res = await apiClient.post('/vector/search', { query, collection, top_k });
+    const res = await apiClient.post('/vector/search', { query, collection, top_k }, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   stats: async (): Promise<VectorStats> => {
-    const res = await apiClient.get('/vector/stats');
+    const res = await apiClient.get('/vector/stats', { timeout: TIMEOUT.short });
     return res.data;
   },
 };
@@ -552,7 +719,7 @@ export interface ContractRiskItem {
 
 export const contractApi = {
   list: async (caseId?: number): Promise<ContractItem[]> => {
-    const res = await apiClient.get('/contracts', { params: { case_id: caseId } });
+    const res = await apiClient.get('/contracts', { params: { case_id: caseId }, timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -569,7 +736,7 @@ export const contractApi = {
     if (data.file) formData.append('file', data.file);
     const res = await apiClient.post('/contracts/draft', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300000,
+      timeout: TIMEOUT.ai,
     });
     return res.data;
   },
@@ -581,30 +748,31 @@ export const contractApi = {
     if (caseId) formData.append('case_id', String(caseId));
     const res = await apiClient.post('/contracts/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 180000,
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
 
   get: async (id: number): Promise<ContractItem> => {
-    const res = await apiClient.get(`/contracts/${id}`);
+    const res = await apiClient.get(`/contracts/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
   review: async (id: number): Promise<ContractItem> => {
-    const res = await apiClient.post(`/contracts/${id}/review`, null, { timeout: 300000 });
+    const res = await apiClient.post(`/contracts/${id}/review`, null, { timeout: TIMEOUT.ai });
     return res.data;
   },
 
   exportReport: async (id: number, format: string = 'markdown'): Promise<Blob> => {
     const res = await apiClient.post(`/contracts/${id}/export`, { format }, {
       responseType: 'blob',
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/contracts/${id}`);
+    await apiClient.delete(`/contracts/${id}`, { timeout: TIMEOUT.medium });
   },
 };
 
@@ -619,12 +787,12 @@ export interface ChainAnalysisResult {
 
 export const evidenceChainApi = {
   analyzeChain: async (caseId: number): Promise<ChainAnalysisResult> => {
-    const res = await apiClient.post(`/evidence/chain-analysis/${caseId}`, null, { timeout: 300000 });
+    const res = await apiClient.post(`/evidence/chain-analysis/${caseId}`, null, { timeout: TIMEOUT.ai });
     return res.data;
   },
 
   crossExamination: async (evidenceId: number): Promise<{ cross_examination: string }> => {
-    const res = await apiClient.post(`/evidence/${evidenceId}/cross-examination`, null, { timeout: 300000 });
+    const res = await apiClient.post(`/evidence/${evidenceId}/cross-examination`, null, { timeout: TIMEOUT.ai });
     return res.data;
   },
 };
@@ -650,7 +818,7 @@ export interface KnowledgeStats {
 
 export const knowledgeApi = {
   list: async (params?: { skip?: number; limit?: number; tag?: string }): Promise<KnowledgeItem[]> => {
-    const res = await apiClient.get('/knowledge', { params });
+    const res = await apiClient.get('/knowledge', { params, timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -661,7 +829,7 @@ export const knowledgeApi = {
     tags?: string[];
     team_id?: number;
   }): Promise<KnowledgeItem> => {
-    const res = await apiClient.post('/knowledge', data);
+    const res = await apiClient.post('/knowledge', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
@@ -670,13 +838,13 @@ export const knowledgeApi = {
     formData.append('file', file);
     const res = await apiClient.post('/knowledge/upload-file', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
+      timeout: TIMEOUT.long,
     });
     return res.data;
   },
 
   get: async (id: number): Promise<KnowledgeItem> => {
-    const res = await apiClient.get(`/knowledge/${id}`);
+    const res = await apiClient.get(`/knowledge/${id}`, { timeout: TIMEOUT.short });
     return res.data;
   },
 
@@ -686,16 +854,29 @@ export const knowledgeApi = {
     source?: string;
     tags?: string[];
   }): Promise<KnowledgeItem> => {
-    const res = await apiClient.put(`/knowledge/${id}`, data);
+    const res = await apiClient.put(`/knowledge/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/knowledge/${id}`);
+    await apiClient.delete(`/knowledge/${id}`, { timeout: TIMEOUT.medium });
   },
 
   stats: async (): Promise<KnowledgeStats> => {
-    const res = await apiClient.get('/knowledge/stats');
+    const res = await apiClient.get('/knowledge/stats', { timeout: TIMEOUT.short });
+    return res.data;
+  },
+
+  search: async (q: string, skip?: number, limit?: number): Promise<KnowledgeItem[]> => {
+    const res = await apiClient.get('/knowledge/search/results', {
+      params: { q, skip, limit },
+      timeout: TIMEOUT.short,
+    });
+    return res.data;
+  },
+
+  batchDelete: async (ids: number[]): Promise<{ message: string; deleted_count: number; not_found_count: number }> => {
+    const res = await apiClient.post('/knowledge/batch-delete', ids, { timeout: TIMEOUT.medium });
     return res.data;
   },
 };
@@ -748,36 +929,36 @@ export interface ExternalApiPreset {
 
 export const externalApiConfigApi = {
   list: async (): Promise<ExternalApiConfig[]> => {
-    const res = await apiClient.get('/external-apis');
+    const res = await apiClient.get('/external-apis', { timeout: TIMEOUT.short });
     return res.data;
   },
 
   create: async (data: any): Promise<ExternalApiConfig> => {
-    const res = await apiClient.post('/external-apis', data);
+    const res = await apiClient.post('/external-apis', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   update: async (id: number, data: any): Promise<ExternalApiConfig> => {
-    const res = await apiClient.put(`/external-apis/${id}`, data);
+    const res = await apiClient.put(`/external-apis/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   delete: async (id: number): Promise<void> => {
-    await apiClient.delete(`/external-apis/${id}`);
+    await apiClient.delete(`/external-apis/${id}`, { timeout: TIMEOUT.medium });
   },
 
   toggle: async (id: number): Promise<ExternalApiConfig> => {
-    const res = await apiClient.post(`/external-apis/${id}/toggle`);
+    const res = await apiClient.post(`/external-apis/${id}/toggle`, null, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   test: async (id: number): Promise<{ success: boolean; message: string; latency_ms: number }> => {
-    const res = await apiClient.post(`/external-apis/test?api_id=${id}`);
+    const res = await apiClient.post('/external-apis/test', { api_id: id }, { timeout: TIMEOUT.long });
     return res.data;
   },
 
   presets: async (): Promise<ExternalApiPreset[]> => {
-    const res = await apiClient.get('/external-apis/presets');
+    const res = await apiClient.get('/external-apis/presets', { timeout: TIMEOUT.short });
     return res.data;
   },
 };
@@ -796,22 +977,56 @@ export interface AppConfigItem {
 
 export const appConfigApi = {
   list: async (category?: string): Promise<AppConfigItem[]> => {
-    const res = await apiClient.get('/app-config', { params: { category } });
+    const res = await apiClient.get('/app-config', { params: { category }, timeout: TIMEOUT.short });
     return res.data;
   },
 
   update: async (id: number, data: { config_value?: string; description?: string }): Promise<AppConfigItem> => {
-    const res = await apiClient.put(`/app-config/${id}`, data);
+    const res = await apiClient.put(`/app-config/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   batchUpdate: async (items: { config_key: string; config_value: string }[]): Promise<AppConfigItem[]> => {
-    const res = await apiClient.post('/app-config/batch-update', items);
+    const res = await apiClient.post('/app-config/batch-update', items, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
   resetVectorConnection: async (): Promise<{ message: string }> => {
-    const res = await apiClient.post('/app-config/reset-vector-connection');
+    const res = await apiClient.post('/app-config/reset-vector-connection', null, { timeout: TIMEOUT.medium });
+    return res.data;
+  },
+};
+
+// ── Law Verification API ──────────────────────────────────────────────
+
+export interface LawVerifyResult {
+  law_name: string;
+  article_number: string;
+  quoted_text: string;
+  actual_text: string;
+  overall_consistent: boolean;
+  sources: any[];
+  recommendation: string;
+}
+
+export const lawVerifyApi = {
+  verify: async (data: {
+    law_name: string;
+    article_number: string;
+    quoted_text?: string;
+  }): Promise<LawVerifyResult> => {
+    const res = await apiClient.post('/law-verify/verify', data, { timeout: TIMEOUT.ai });
+    return res.data;
+  },
+
+  verifyBatch: async (documentContent: string): Promise<{
+    total_references: number;
+    verified: LawVerifyResult[];
+    warnings: string[];
+  }> => {
+    const res = await apiClient.post('/law-verify/verify-batch', {
+      document_content: documentContent,
+    }, { timeout: TIMEOUT.ai });
     return res.data;
   },
 };

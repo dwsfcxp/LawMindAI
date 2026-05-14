@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.cache import presets_cache
 from app.models.user import User
 from app.models.external_api import ExternalApiConfig
 from app.schemas.external_api import (
@@ -409,4 +410,8 @@ async def test_api(
 
 @router.get("/presets", response_model=list[ExternalApiPreset])
 async def get_presets():
+    cached = presets_cache.get("external_api_presets")
+    if cached is not None:
+        return cached
+    presets_cache.set("external_api_presets", EXTERNAL_API_PRESETS)
     return EXTERNAL_API_PRESETS

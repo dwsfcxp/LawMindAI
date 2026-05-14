@@ -41,6 +41,18 @@ class LawVerificationEngine:
             elif isinstance(r, Exception):
                 logger.warning(f"Verification source failed: {r}")
 
+        # Handle empty results gracefully
+        if not verify_results:
+            return LawVerifyResponse(
+                law_name=req.law_name,
+                article_number=req.article_number,
+                original_content=req.content,
+                results=[],
+                overall_consistent=False,
+                confidence=0.0,
+                recommendation="所有验证源均无法访问，请稍后重试或人工核实。",
+            )
+
         # 综合判断
         consistent_sources = sum(1 for r in verify_results if r.found and r.is_consistent)
         found_sources = sum(1 for r in verify_results if r.found)
@@ -86,11 +98,23 @@ class LawVerificationEngine:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r for r in results if isinstance(r, LawVerifyResponse)]
 
+    # HTTP request timeout in seconds
+    HTTP_TIMEOUT = 15
+
     def _extract_citations(self, text: str) -> list[tuple[str, str, str]]:
-        """从文本中提取法条引用。返回 (法律名, 条款号, 周围上下文)"""
+        """从文本中提取法条引用。返回 (法律名, 条款号, 周围上下文)
+
+        Supports formats like:
+        - 《XXX法》第X条
+        - 《XXX法》第X条第X款
+        - 《XXX法》第X条第X款第X项
+        """
         citations = []
-        # 匹配 "《XXX法》第X条" 模式
-        pattern = r'《([^》]+)》\s*(第[一二三四五六七八九十百千万零\d]+条)'
+        # Extended pattern: supports 条/款/项 combinations
+        # 条款号部分的数字可以是中文数字或阿拉伯数字
+        cn_num = r'[一二三四五六七八九十百千万零\d]+'
+        article_pattern = rf'第{cn_num}条(?:第{cn_num}款(?:第{cn_num}项)?)?'
+        pattern = rf'《([^》]+)》\s*({article_pattern})'
         for match in re.finditer(pattern, text):
             law_name = match.group(1)
             article = match.group(2)
@@ -106,7 +130,7 @@ class LawVerificationEngine:
         """验证来源1: 全国人大法律法规库 flk.npc.gov.cn"""
         error_msg = "连接超时"
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
                 # 尝试搜索
                 search_url = "https://flk.npc.gov.cn/api/search"
                 resp = await client.post(search_url, json={
@@ -146,7 +170,7 @@ class LawVerificationEngine:
     async def _verify_gov_cn(self, req: LawVerifyRequest) -> LawVerifyResult:
         """验证来源2: 中央政府规章库 gov.cn"""
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
                 url = f"https://www.gov.cn/zhengce/xxgk/gjgzk/index.htm?searchWord={req.law_name}"
                 resp = await client.get(url, follow_redirects=True)
                 if resp.status_code == 200:
