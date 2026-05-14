@@ -134,7 +134,7 @@ export default function Settings() {
                     {testing === c.id ? <Loader2 className="h-3 w-3 animate-spin" /> : '测试连接'}
                   </button>
                   <button onClick={() => handleEdit(c)} className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent">编辑</button>
-                  <button onClick={() => handleDelete(c)} className="rounded-md border px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10">
+                  <button onClick={() => handleDelete(c.id)} className="rounded-md border px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10">
                     <Trash2 className="h-3 w-3" />
                   </button>
                 </div>
