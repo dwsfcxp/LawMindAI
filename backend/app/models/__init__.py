@@ -6,9 +6,10 @@ from app.models.search import SearchRecord
 from app.models.knowledge import KnowledgeItem
 from app.models.llm_settings import LLMSettings
 from app.models.research import ResearchReport
+from app.models.contract import Contract
 
 __all__ = [
     "User", "Team", "Case", "Template", "Document",
     "Evidence", "SearchRecord", "KnowledgeItem", "LLMSettings",
-    "ResearchReport",
+    "ResearchReport", "Contract",
 ]

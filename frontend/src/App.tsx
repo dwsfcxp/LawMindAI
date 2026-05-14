@@ -10,6 +10,7 @@ import Templates from './pages/Templates';
 import Settings from './pages/Settings';
 import Evidence from './pages/Evidence';
 import Research from './pages/Research';
+import ContractReview from './pages/ContractReview';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
         <Route path="templates" element={<Templates />} />
         <Route path="evidence" element={<Evidence />} />
         <Route path="research" element={<Research />} />
+        <Route path="contracts" element={<ContractReview />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

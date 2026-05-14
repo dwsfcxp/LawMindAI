@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.core.database import engine, Base
-from app.api.routers import auth, cases, documents, templates, search, health, llm_settings, evidence, vector, research, verification
+from app.api.routers import auth, cases, documents, templates, search, health, llm_settings, evidence, vector, research, verification, contracts
 from pathlib import Path
 
 
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(vector.router, prefix="/api/v1/vector", tags=["向量检索"])
     app.include_router(research.router, prefix="/api/v1/research", tags=["法律研究"])
     app.include_router(verification.router, prefix="/api/v1/law-verify", tags=["法条核查"])
+    app.include_router(contracts.router, prefix="/api/v1/contracts", tags=["合同审查"])
 
     return app
 

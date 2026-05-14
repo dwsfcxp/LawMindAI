@@ -487,4 +487,78 @@ export const vectorApi = {
   },
 };
 
+// ── Contract Review API ───────────────────────────────────────────────
+
+export interface ContractItem {
+  id: number;
+  case_id: number | null;
+  owner_id: number;
+  title: string;
+  file_path: string | null;
+  file_type: string | null;
+  parsed_text: string | null;
+  clauses: ContractClause[] | null;
+  review_report: string | null;
+  risk_items: ContractRiskItem[] | null;
+  risk_score: number | null;
+  status: string;
+  has_file: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContractClause {
+  type: string;
+  text: string;
+  position: number;
+}
+
+export interface ContractRiskItem {
+  dimension: string;
+  level: string;
+  clause: string;
+  issue: string;
+  suggestion: string;
+}
+
+export const contractApi = {
+  list: async (caseId?: number): Promise<ContractItem[]> => {
+    const res = await apiClient.get('/contracts', { params: { case_id: caseId } });
+    return res.data;
+  },
+
+  upload: async (file: File, title: string, caseId?: number): Promise<ContractItem> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('title', title);
+    if (caseId) formData.append('case_id', String(caseId));
+    const res = await apiClient.post('/contracts/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+    });
+    return res.data;
+  },
+
+  get: async (id: number): Promise<ContractItem> => {
+    const res = await apiClient.get(`/contracts/${id}`);
+    return res.data;
+  },
+
+  review: async (id: number): Promise<ContractItem> => {
+    const res = await apiClient.post(`/contracts/${id}/review`, null, { timeout: 300000 });
+    return res.data;
+  },
+
+  exportReport: async (id: number, format: string = 'markdown'): Promise<Blob> => {
+    const res = await apiClient.post(`/contracts/${id}/export`, { format }, {
+      responseType: 'blob',
+    });
+    return res.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/contracts/${id}`);
+  },
+};
+
 export default apiClient;
