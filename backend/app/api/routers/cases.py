@@ -1,6 +1,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, and_
+from fastapi.responses import JSONResponse
+from sqlalchemy import select, func, or_, and_, false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -36,7 +37,7 @@ def _case_to_out(case: Case, doc_count: int = 0) -> dict:
     }
 
 
-@router.get("", response_model=list[CaseOut])
+@router.get("")
 async def list_cases(
     status: str | None = None,
     case_type: str | None = None,
@@ -53,14 +54,24 @@ async def list_cases(
         .label("document_count")
     )
 
+    base_where = or_(
+        Case.owner_id == current_user.id,
+        and_(
+            Case.team_id == current_user.team_id,
+        ) if current_user.team_id is not None else sa_false(),
+    )
+
+    # Count query for pagination header
+    count_q = select(func.count(Case.id)).where(base_where)
+    if status:
+        count_q = count_q.where(Case.status == status)
+    if case_type:
+        count_q = count_q.where(Case.case_type == case_type)
+    total = (await db.execute(count_q)).scalar() or 0
+
     q = (
         select(Case, doc_count_sq)
-        .where(
-            or_(
-                Case.owner_id == current_user.id,
-                and_(current_user.team_id.isnot(None), Case.team_id == current_user.team_id),
-            )
-        )
+        .where(base_where)
     )
     if status:
         q = q.where(Case.status == status)
@@ -68,9 +79,17 @@ async def list_cases(
         q = q.where(Case.case_type == case_type)
     q = q.order_by(Case.updated_at.desc()).offset(skip).limit(limit)
 
-    result = await db.execute(q)
-    rows = result.all()
-    return [CaseOut.model_validate(_case_to_out(case, count)) for case, count in rows]
+    try:
+        result = await db.execute(q)
+        rows = result.all()
+        items = [CaseOut.model_validate(_case_to_out(case, count)).model_dump(mode="json") for case, count in rows]
+        return JSONResponse(
+            content=items,
+            headers={"X-Total-Count": str(total)},
+        )
+    except Exception as e:
+        logger.error(f"List cases failed: {e}")
+        raise HTTPException(500, "查询案件列表失败")
 
 
 @router.post("", response_model=CaseOut, status_code=201)
@@ -79,15 +98,20 @@ async def create_case(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    case = Case(
-        **data.model_dump(),
-        owner_id=current_user.id,
-        team_id=current_user.team_id,
-    )
-    db.add(case)
-    await db.flush()
-    await db.refresh(case)
-    return CaseOut.model_validate(_case_to_out(case, 0))
+    try:
+        case = Case(
+            **data.model_dump(),
+            owner_id=current_user.id,
+            team_id=current_user.team_id,
+        )
+        db.add(case)
+        await db.flush()
+        await db.refresh(case)
+        return CaseOut.model_validate(_case_to_out(case, 0))
+    except Exception as e:
+        logger.error(f"Create case failed: {e}")
+        await db.rollback()
+        raise HTTPException(500, "创建案件失败，请稍后重试")
 
 
 @router.get("/{case_id}", response_model=CaseOut)
@@ -96,13 +120,19 @@ async def get_case(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    case = await db.get(Case, case_id)
-    if not case or (case.owner_id != current_user.id and (not current_user.team_id or case.team_id != current_user.team_id)):
-        raise HTTPException(404, "案件不存在")
-    doc_count = await db.execute(
-        select(func.count()).where(Document.case_id == case.id)
-    )
-    return CaseOut.model_validate(_case_to_out(case, doc_count.scalar() or 0))
+    try:
+        case = await db.get(Case, case_id)
+        if not case or (case.owner_id != current_user.id and (not current_user.team_id or case.team_id != current_user.team_id)):
+            raise HTTPException(404, "案件不存在")
+        doc_count = await db.execute(
+            select(func.count()).where(Document.case_id == case.id)
+        )
+        return CaseOut.model_validate(_case_to_out(case, doc_count.scalar() or 0))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get case failed: {e}")
+        raise HTTPException(500, "查询案件失败")
 
 
 @router.put("/{case_id}", response_model=CaseOut)
@@ -112,17 +142,24 @@ async def update_case(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    case = await db.get(Case, case_id)
-    if not case or case.owner_id != current_user.id:
-        raise HTTPException(404, "案件不存在")
-    for k, v in data.model_dump(exclude_unset=True).items():
-        setattr(case, k, v)
-    await db.flush()
-    await db.refresh(case)
-    doc_count = await db.execute(
-        select(func.count()).where(Document.case_id == case.id)
-    )
-    return CaseOut.model_validate(_case_to_out(case, doc_count.scalar() or 0))
+    try:
+        case = await db.get(Case, case_id)
+        if not case or case.owner_id != current_user.id:
+            raise HTTPException(404, "案件不存在")
+        for k, v in data.model_dump(exclude_unset=True).items():
+            setattr(case, k, v)
+        await db.flush()
+        await db.refresh(case)
+        doc_count = await db.execute(
+            select(func.count()).where(Document.case_id == case.id)
+        )
+        return CaseOut.model_validate(_case_to_out(case, doc_count.scalar() or 0))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update case failed: {e}")
+        await db.rollback()
+        raise HTTPException(500, "更新案件失败")
 
 
 @router.post("/{case_id}/analyze")

@@ -4,6 +4,7 @@ import time
 import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -191,35 +192,55 @@ async def list_apis(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(ExternalApiConfig)
-        .where(ExternalApiConfig.owner_id == current_user.id)
-        .order_by(ExternalApiConfig.created_at.desc())
-    )
-    return [_row_to_out(r) for r in result.scalars().all()]
+    try:
+        result = await db.execute(
+            select(ExternalApiConfig)
+            .where(ExternalApiConfig.owner_id == current_user.id)
+            .order_by(ExternalApiConfig.created_at.desc())
+        )
+        items = [_row_to_out(r).model_dump(mode="json") for r in result.scalars().all()]
+        return JSONResponse(content=items, headers={"X-Total-Count": str(len(items))})
+    except Exception as e:
+        logger.error(f"List external APIs failed: {e}")
+        raise HTTPException(500, "查询外部API列表失败")
 
 
-@router.post("", response_model=ExternalApiOut)
+@router.post("", response_model=ExternalApiOut, status_code=201)
 async def create_api(
     data: ExternalApiCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    row = ExternalApiConfig(
-        owner_id=current_user.id,
-        **data.model_dump(),
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
+    # Validate JSON fields
+    for json_field in ("custom_headers", "response_mapping", "request_template"):
+        val = getattr(data, json_field, None)
+        if val:
+            try:
+                json.loads(val)
+            except json.JSONDecodeError:
+                raise HTTPException(400, f"{json_field} 不是有效的JSON格式")
+    try:
+        row = ExternalApiConfig(
+            owner_id=current_user.id,
+            **data.model_dump(),
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
 
-    if row.is_enabled:
-        try:
-            register_dynamic_adapter(row)
-        except Exception as e:
-            logger.warning(f"Failed to register adapter: {e}")
+        if row.is_enabled:
+            try:
+                register_dynamic_adapter(row)
+            except Exception as e:
+                logger.warning(f"Failed to register adapter: {e}")
 
-    return _row_to_out(row)
+        return _row_to_out(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Create external API failed: {e}")
+        await db.rollback()
+        raise HTTPException(500, "创建外部API配置失败")
 
 
 @router.put("/{api_id}", response_model=ExternalApiOut)
@@ -229,32 +250,47 @@ async def update_api(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(ExternalApiConfig).where(
-            ExternalApiConfig.id == api_id,
-            ExternalApiConfig.owner_id == current_user.id,
+    # Validate JSON fields if provided
+    for json_field in ("custom_headers", "response_mapping", "request_template"):
+        val = getattr(data, json_field, None)
+        if val is not None:
+            try:
+                json.loads(val)
+            except json.JSONDecodeError:
+                raise HTTPException(400, f"{json_field} 不是有效的JSON格式")
+    try:
+        result = await db.execute(
+            select(ExternalApiConfig).where(
+                ExternalApiConfig.id == api_id,
+                ExternalApiConfig.owner_id == current_user.id,
+            )
         )
-    )
-    row = result.scalar_one_or_none()
-    if not row:
-        raise HTTPException(404, "配置不存在")
+        row = result.scalar_one_or_none()
+        if not row:
+            raise HTTPException(404, "配置不存在")
 
-    # 先取消注册旧适配器
-    unregister_dynamic_adapter(row.id)
+        # 先取消注册旧适配器
+        unregister_dynamic_adapter(row.id)
 
-    for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(row, field, value)
-    await db.commit()
-    await db.refresh(row)
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(row, field, value)
+        await db.commit()
+        await db.refresh(row)
 
-    # 重新注册
-    if row.is_enabled:
-        try:
-            register_dynamic_adapter(row)
-        except Exception as e:
-            logger.warning(f"Failed to re-register adapter: {e}")
+        # 重新注册
+        if row.is_enabled:
+            try:
+                register_dynamic_adapter(row)
+            except Exception as e:
+                logger.warning(f"Failed to re-register adapter: {e}")
 
-    return _row_to_out(row)
+        return _row_to_out(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update external API failed: {e}")
+        await db.rollback()
+        raise HTTPException(500, "更新外部API配置失败")
 
 
 @router.delete("/{api_id}")
@@ -263,20 +299,27 @@ async def delete_api(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(ExternalApiConfig).where(
-            ExternalApiConfig.id == api_id,
-            ExternalApiConfig.owner_id == current_user.id,
+    try:
+        result = await db.execute(
+            select(ExternalApiConfig).where(
+                ExternalApiConfig.id == api_id,
+                ExternalApiConfig.owner_id == current_user.id,
+            )
         )
-    )
-    row = result.scalar_one_or_none()
-    if not row:
-        raise HTTPException(404, "配置不存在")
+        row = result.scalar_one_or_none()
+        if not row:
+            raise HTTPException(404, "配置不存在")
 
-    unregister_dynamic_adapter(row.id)
-    await db.delete(row)
-    await db.commit()
-    return {"message": "已删除"}
+        unregister_dynamic_adapter(row.id)
+        await db.delete(row)
+        await db.commit()
+        return {"message": "已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete external API failed: {e}")
+        await db.rollback()
+        raise HTTPException(500, "删除外部API配置失败")
 
 
 @router.post("/{api_id}/toggle", response_model=ExternalApiOut)

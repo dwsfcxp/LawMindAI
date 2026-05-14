@@ -3,7 +3,8 @@
 import time
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update
+from fastapi.responses import JSONResponse
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -68,10 +69,11 @@ async def list_settings(
     result = await db.execute(
         select(Model).where(Model.owner_id == current_user.id).order_by(Model.is_default.desc(), Model.created_at)
     )
-    return [_row_to_out(r) for r in result.scalars().all()]
+    items = [_row_to_out(r).model_dump(mode="json") for r in result.scalars().all()]
+    return JSONResponse(content=items, headers={"X-Total-Count": str(len(items))})
 
 
-@router.post("", response_model=LLMSettingsOut)
+@router.post("", response_model=LLMSettingsOut, status_code=201)
 async def create_settings(
     data: LLMSettingsCreate,
     db: AsyncSession = Depends(get_db),

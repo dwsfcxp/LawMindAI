@@ -2,6 +2,7 @@
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +68,20 @@ async def list_configs(
         query = query.where(AppConfig.category == category)
     query = query.order_by(AppConfig.category, AppConfig.config_key)
     result = await db.execute(query)
-    return result.scalars().all()
+    rows = result.scalars().all()
+    items = [
+        {
+            "id": r.id,
+            "config_key": r.config_key,
+            "config_value": r.config_value,
+            "description": r.description,
+            "category": r.category,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        }
+        for r in rows
+    ]
+    return JSONResponse(content=items, headers={"X-Total-Count": str(len(items))})
 
 
 @router.put("/{config_id}", response_model=ConfigItemOut)
