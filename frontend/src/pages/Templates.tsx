@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Plus, Edit3, Trash2, FileCode, X, Loader2, Copy, Check, Eye, AlertCircle } from 'lucide-react';
 import { templateApi } from '@/lib/api';
 import type { Template } from '@/lib/api';
@@ -23,7 +23,7 @@ function extractVariables(content: string): string[] {
   return vars;
 }
 
-export default function Templates() {
+function Templates() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -46,7 +46,7 @@ export default function Templates() {
   // Duplicate feedback
   const [duplicatedId, setDuplicatedId] = useState<number | null>(null);
 
-  const fetchTemplates = async () => {
+  const fetchTemplates = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -57,7 +57,7 @@ export default function Templates() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchTemplates();
@@ -83,7 +83,7 @@ export default function Templates() {
     setShowDialog(true);
   };
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSave = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError('');
@@ -106,9 +106,9 @@ export default function Templates() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [editId, form, fetchTemplates]);
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = useCallback(async (id: number) => {
     setError('');
     try {
       await templateApi.delete(id);
@@ -117,9 +117,9 @@ export default function Templates() {
     } catch {
       setError('删除模板失败，请重试');
     }
-  };
+  }, [fetchTemplates]);
 
-  const handleDuplicate = async (t: Template) => {
+  const handleDuplicate = useCallback(async (t: Template) => {
     setError('');
     try {
       await templateApi.create({
@@ -134,7 +134,7 @@ export default function Templates() {
     } catch {
       setError('复制模板失败，请重试');
     }
-  };
+  }, [fetchTemplates]);
 
   const docTypeLabel = (v: string) => DOC_TYPES.find((d) => d.value === v)?.label || v;
 
@@ -446,3 +446,5 @@ export default function Templates() {
     </div>
   );
 }
+
+export default React.memo(Templates);

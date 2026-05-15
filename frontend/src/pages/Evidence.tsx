@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight, Link2, MessageSquare, AlertCircle, X, Plus, Image, Mic, Volume2, Scale, Camera, Monitor, FileSpreadsheet, Clock, Eye } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { caseApi, evidenceApi, evidenceChainApi, type Case as CaseType, type EvidenceItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import type { ChainAnalysisResult } from '@/lib/api';
@@ -284,8 +285,8 @@ export default function Evidence() {
       await evidenceApi.upload(uploadTarget, file);
       loadEvidence();
       toast({ type: 'success', title: '文件上传成功' });
-    } catch (err: any) {
-      const msg = '上传失败: ' + (err.message || '');
+    } catch (err: unknown) {
+      const msg = '上传失败: ' + (err instanceof Error ? err.message : '');
       setError(msg);
       toast({ type: 'error', title: '上传失败' });
     }
@@ -299,8 +300,8 @@ export default function Evidence() {
       await evidenceApi.upload(evidenceId, file);
       loadEvidence();
       toast({ type: 'success', title: '文件上传成功' });
-    } catch (err: any) {
-      setError('上传失败: ' + (err.message || ''));
+    } catch (err: unknown) {
+      setError('上传失败: ' + (err instanceof Error ? err.message : ''));
       toast({ type: 'error', title: '上传失败' });
     } finally {
       setUploading(null);
@@ -364,8 +365,8 @@ export default function Evidence() {
       const result = await evidenceChainApi.analyzeChain(selectedCase);
       setChainResult(result);
       toast({ type: 'success', title: '证据链分析完成', description: `完整度评分: ${result.completeness_score ?? '-'}` });
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '证据链分析失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '证据链分析失败') : '证据链分析失败';
       setError(msg);
       toast({ type: 'error', title: '证据链分析失败', description: msg });
     } finally { setAnalyzingChain(false); }
@@ -377,8 +378,8 @@ export default function Evidence() {
       const result = await evidenceChainApi.crossExamination(id);
       setCrossExamText(prev => ({ ...prev, [id]: result.cross_examination }));
       toast({ type: 'success', title: '质证意见已生成' });
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '质证意见生成失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '质证意见生成失败') : '质证意见生成失败';
       setError(msg);
       toast({ type: 'error', title: '质证意见生成失败' });
     } finally { setCrossExamId(null); }

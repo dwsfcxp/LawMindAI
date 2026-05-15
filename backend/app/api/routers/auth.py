@@ -87,7 +87,7 @@ async def register(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Registration failed: {e}")
+        logger.error("Registration failed: %s", e)
         await db.rollback()
         raise HTTPException(status_code=500, detail="注册失败，请稍后重试")
 
@@ -133,7 +133,7 @@ async def login(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Login failed: {e}")
+        logger.error("Login failed: %s", e)
         raise HTTPException(status_code=500, detail="登录失败，请稍后重试")
 
 
@@ -162,6 +162,6 @@ async def update_me(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update user failed: {e}")
+        logger.error("Update user failed: %s", e)
         await db.rollback()
         raise HTTPException(status_code=500, detail="更新失败，请稍后重试")

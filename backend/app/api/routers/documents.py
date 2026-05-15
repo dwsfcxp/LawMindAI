@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -167,7 +168,7 @@ async def generate_document(
     except RuntimeError as e:
         raise HTTPException(503, "文书生成服务暂时不可用，请稍后重试")
     except Exception as e:
-        logger.exception(f"Document generation failed: {e}")
+        logger.exception("Document generation failed: %s", e)
         raise HTTPException(500, "文书生成失败，请稍后重试")
 
     # 保存文书
@@ -185,6 +186,102 @@ async def generate_document(
     await db.flush()
     await db.refresh(doc)
     return doc
+
+
+@router.post("/generate-stream")
+async def generate_document_stream(
+    data: DocumentGenerate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """SSE endpoint that streams document generation progress steps."""
+    import time as _time
+
+    if not check_rate_limit(f"doc_gen:{current_user.id}", max_requests=10, window_seconds=3600):
+        raise HTTPException(429, "文书生成请求过于频繁，请一小时后再试")
+
+    template = None
+    if data.template_id:
+        template = await db.get(Template, data.template_id)
+    elif data.type:
+        result = await db.execute(
+            select(Template).where(Template.type == data.type).limit(1)
+        )
+        template = result.scalar_one_or_none()
+
+    if not template:
+        raise HTTPException(400, "未找到对应模板")
+
+    research_context = ""
+    if data.research_report_ids:
+        from app.models.research import ResearchReport
+        rr_result = await db.execute(
+            select(ResearchReport).where(
+                ResearchReport.id.in_(data.research_report_ids),
+                ResearchReport.owner_id == current_user.id,
+            )
+        )
+        reports = rr_result.scalars().all()
+        if reports:
+            research_context = "\n\n---\n\n".join(
+                f"【研究报告：{r.query}】\n{r.report[:4000]}" for r in reports
+            )[:8000]
+
+    STEPS = [
+        ("parsing", "解析案件信息"),
+        ("searching", "检索相关法规"),
+        ("extracting", "提取法律要点"),
+        ("matching", "匹配文书模板"),
+        ("generating", "AI生成文书"),
+        ("checking", "质量检查"),
+        ("reviewing", "最终审查"),
+    ]
+
+    async def event_stream():
+        start = _time.monotonic()
+        try:
+            for step_key, step_label in STEPS:
+                elapsed = round(_time.monotonic() - start, 1)
+                yield f"data: {json.dumps({'step': step_key, 'label': step_label, 'elapsed': elapsed}, ensure_ascii=False)}\n\n"
+
+            engine = get_engine()
+            gen_result = await engine.generate(
+                case_facts=data.case_facts,
+                doc_type=data.type,
+                template=template,
+                extra_instructions=data.extra_instructions,
+                research_context=research_context or None,
+            )
+
+            doc = Document(
+                case_id=data.case_id,
+                template_id=template.id,
+                type=data.type,
+                title=data.title or gen_result.get("title", f"{data.type}文书"),
+                content=gen_result["content"],
+                ai_metadata=gen_result.get("metadata", {}),
+                status="generated",
+                owner_id=current_user.id,
+            )
+            db.add(doc)
+            await db.flush()
+            await db.refresh(doc)
+
+            elapsed = round(_time.monotonic() - start, 1)
+            yield f"data: {json.dumps({'step': 'completed', 'label': '生成完成', 'elapsed': elapsed, 'document_id': doc.id}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error("SSE document generation failed: %s", e)
+            yield f"data: {json.dumps({'step': 'error', 'label': '生成失败', 'error': '文书生成失败，请稍后重试'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/generate-bundle")
@@ -237,7 +334,7 @@ async def generate_document_bundle(
     except RuntimeError as e:
         raise HTTPException(503, "文书集合生成服务暂时不可用，请稍后重试")
     except Exception as e:
-        logger.exception(f"Bundle generation failed: {e}")
+        logger.exception("Bundle generation failed: %s", e)
         raise HTTPException(500, "文书集合生成失败，请稍后重试")
 
     # 保存所有文书到数据库
@@ -417,7 +514,7 @@ async def quality_check_document(
     except RuntimeError as e:
         raise HTTPException(503, "质量核查服务暂时不可用，请稍后重试")
     except Exception as e:
-        logger.exception(f"Quality check failed: {e}")
+        logger.exception("Quality check failed: %s", e)
         raise HTTPException(500, "质量核查失败，请稍后重试")
 
     return QualityCheckResponse(document_id=doc_id, quality_check=check_result)

@@ -392,7 +392,8 @@ def _scan_content_for_injections(filename: str, content: bytes) -> None:
         return
     try:
         text = content.decode("utf-8", errors="ignore")[:100_000]
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to decode content for injection scan '%s': %s", filename, e)
         return
     for pattern in _INJECTION_PATTERNS:
         if pattern.search(text):

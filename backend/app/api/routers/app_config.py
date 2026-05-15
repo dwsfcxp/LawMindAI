@@ -1,9 +1,9 @@
 """应用配置路由 — 向量数据库路径、系统参数等"""
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -59,14 +59,23 @@ VECTOR_DB_DEFAULTS = [
 @router.get("", response_model=list[ConfigItemOut])
 async def list_configs(
     category: str = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(max(limit, 1), 100)
     await _ensure_defaults(db, current_user)
-    query = select(AppConfig).where(AppConfig.owner_id == current_user.id)
+    base = AppConfig.owner_id == current_user.id
+    count_q = select(func.count(AppConfig.id)).where(base)
+    if category:
+        count_q = count_q.where(AppConfig.category == category)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    query = select(AppConfig).where(base)
     if category:
         query = query.where(AppConfig.category == category)
-    query = query.order_by(AppConfig.category, AppConfig.config_key)
+    query = query.order_by(AppConfig.category, AppConfig.config_key).offset(skip).limit(limit)
     result = await db.execute(query)
     rows = result.scalars().all()
     items = [
@@ -81,7 +90,7 @@ async def list_configs(
         }
         for r in rows
     ]
-    return JSONResponse(content=items, headers={"X-Total-Count": str(len(items))})
+    return JSONResponse(content=items, headers={"X-Total-Count": str(total)})
 
 
 @router.put("/{config_id}", response_model=ConfigItemOut)

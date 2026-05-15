@@ -18,4 +18,12 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // PWA: ensure manifest.json and icons from public/ are included in dist output
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
+      },
+    },
+  },
 });

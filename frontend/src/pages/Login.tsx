@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Scale, Eye, EyeOff, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { authApi } from '@/lib/api';
 import { announceToScreenReader } from '@/lib/accessibility';
 
@@ -145,11 +146,11 @@ export default function Login() {
       // Redirect to the page user was trying to visit, or dashboard
       const from = (location.state as any)?.from?.pathname || '/';
       setTimeout(() => navigate(from, { replace: true }), 400);
-    } catch (err: any) {
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.message ||
-        (isRegister ? '注册失败，请重试' : '登录失败，请检查邮箱和密码');
+    } catch (err: unknown) {
+      const detail = err instanceof AxiosError
+        ? (err.response?.data?.detail || err.response?.data?.message)
+        : null;
+      const msg = detail || (isRegister ? '注册失败，请重试' : '登录失败，请检查邮箱和密码');
       setError(msg);
       announceToScreenReader(msg, 'assertive');
     } finally {

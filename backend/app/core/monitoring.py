@@ -31,8 +31,6 @@ SLOW_QUERY_THRESHOLD_MS = 1000  # Log warning if query takes > 1 second
 @dataclass
 class TimingRecord:
     """A single timing measurement."""
-    __slots__ = ("name", "elapsed_ms", "timestamp", "metadata")
-
     name: str
     elapsed_ms: float
     timestamp: float

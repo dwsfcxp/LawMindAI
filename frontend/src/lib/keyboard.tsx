@@ -96,8 +96,11 @@ export function useCtrlEnter(callback: () => void) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        callback();
+        const el = e.target as HTMLElement;
+        if (el && isEditableTarget(el)) {
+          e.preventDefault();
+          callback();
+        }
       }
     };
     document.addEventListener('keydown', handler);

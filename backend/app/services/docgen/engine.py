@@ -75,13 +75,13 @@ class DocumentGenerationEngine:
             # Word count limit to prevent runaway generation
             word_count = len(text)
             if word_count > self.MAX_CONTENT_WORDS:
-                logger.warning(f"LLM output truncated: {word_count} chars > {self.MAX_CONTENT_WORDS}")
+                logger.warning("LLM output truncated: %d chars > %d", word_count, self.MAX_CONTENT_WORDS)
                 text = text[:self.MAX_CONTENT_WORDS]
             return text
         except Exception as e:
             error_type = type(e).__name__
             if 'ConnectionError' in error_type or 'connection' in str(e).lower():
-                logger.error(f"AI API connection error: {e}")
+                logger.error("AI API connection error: %s", e)
                 raise RuntimeError("AI服务连接失败，请检查网络后重试")
             if 'RateLimitError' in error_type or 'rate' in str(e).lower():
                 logger.error("AI API rate limit hit")
@@ -107,7 +107,7 @@ class DocumentGenerationEngine:
                     return json.loads(match.group())
                 except json.JSONDecodeError:
                     pass
-            logger.warning(f"Failed to parse JSON from AI response: {text[:200]}")
+            logger.warning("Failed to parse JSON from AI response: %s", text[:200])
             return {}
 
     # ------------------------------------------------------------------
@@ -126,7 +126,7 @@ class DocumentGenerationEngine:
         except RuntimeError:
             raise
         except Exception as e:
-            logger.warning(f"Case parsing failed, using fallback: {e}")
+            logger.warning("Case parsing failed, using fallback: %s", e)
             return {"case_type": "未知", "facts": case_facts, "claims": [], "parties": {}}
 
     # ------------------------------------------------------------------
@@ -148,7 +148,7 @@ class DocumentGenerationEngine:
                 return {"key_issues": [], "applicable_statutes": [], "burden_of_proof": "", "recommended_strategy": ""}
             return extracted
         except Exception as e:
-            logger.warning(f"Legal issue extraction failed: {e}")
+            logger.warning("Legal issue extraction failed: %s", e)
             return {"key_issues": [], "applicable_statutes": [], "burden_of_proof": "", "recommended_strategy": ""}
 
     # ------------------------------------------------------------------
@@ -278,7 +278,7 @@ class DocumentGenerationEngine:
         # 获取文书类型专属规范
         doc_type_specific = DOC_TYPE_SPECIFIC_INSTRUCTIONS.get(doc_type, "")
         if not doc_type_specific:
-            logger.warning(f"No specific instructions found for doc_type={doc_type}")
+            logger.warning("No specific instructions found for doc_type=%s", doc_type)
 
         # 6) 调用LLM生成文书
         enhanced_parsed_case = {
@@ -723,7 +723,7 @@ class DocumentGenerationEngine:
                 for r in results
             ]
         except Exception as e:
-            logger.warning(f"Law verification failed: {e}")
+            logger.warning("Law verification failed: %s", e)
             return []
 
     # ------------------------------------------------------------------
@@ -851,7 +851,7 @@ class DocumentGenerationEngine:
                     },
                 })
             except Exception as e:
-                logger.error(f"Bundle generation failed for {doc_type}: {e}")
+                logger.error("Bundle generation failed for %s: %s", doc_type, e)
                 documents.append({
                     "doc_type": doc_type,
                     "title": DOC_TYPE_NAMES.get(doc_type, doc_type),
@@ -889,7 +889,7 @@ class DocumentGenerationEngine:
             check = self._parse_json_response(result)
             return check if check else {"consistent": True, "issues": []}
         except Exception as e:
-            logger.warning(f"Bundle consistency check failed: {e}")
+            logger.warning("Bundle consistency check failed: %s", e)
             return {"consistent": True, "issues": []}
 
     # ------------------------------------------------------------------

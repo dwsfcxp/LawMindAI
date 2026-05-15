@@ -78,7 +78,7 @@ async def _extract_text(file_path: Path, llm_client=None, model: str = "glm-5.1"
             return await _extract_image(file_path, llm_client, model)
         return ""
     except Exception as e:
-        logger.warning(f"Contract text extraction failed for {file_path}: {e}")
+        logger.warning("Contract text extraction failed for %s: %s", file_path, e)
         return f"[文本提取失败: {e}]"
 
 
@@ -98,7 +98,7 @@ async def _extract_pdf(file_path: Path) -> str:
 
     # For very large documents (>100 pages), truncate to avoid overwhelming LLM
     if page_count > _LARGE_DOC_PAGES:
-        logger.warning(f"Large PDF detected ({page_count} pages), will use chunked processing")
+        logger.warning("Large PDF detected (%d pages), will use chunked processing", page_count)
         result = _truncate_to_chunk_size(result, _CHUNK_SIZE)
 
     return result
@@ -162,13 +162,13 @@ async def _extract_pdf_ocr(file_path: Path, llm_client=None, model: str = "glm-5
                 if page_text:
                     all_text.append(page_text)
             except Exception as e:
-                logger.warning(f"PDF page OCR failed: {e}")
+                logger.warning("PDF page OCR failed: %s", e)
                 continue
 
         return "\n\n".join(all_text) if all_text else ""
 
     except Exception as e:
-        logger.warning(f"PDF OCR fallback failed: {e}")
+        logger.warning("PDF OCR fallback failed: %s", e)
         return ""
 
 
@@ -226,7 +226,7 @@ async def _extract_image(file_path: Path, llm_client, model: str) -> str:
         )
         return response.content[0].text if response.content else "[未能识别文字]"
     except Exception as e:
-        logger.warning(f"Contract image OCR failed: {e}")
+        logger.warning("Contract image OCR failed: %s", e)
         return f"[图片文字提取失败: {e}]"
 
 

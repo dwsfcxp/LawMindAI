@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Upload, FileText, Trash2, Download, Loader2, ShieldCheck, AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, FileDown, PenLine, X, FileUp, CheckCircle2, Clock, Columns2, ArrowRightLeft, Sparkles, GitCompare, Eye } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { contractApi, caseApi, type ContractItem, type ContractRiskItem, type Case as CaseType } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -356,8 +357,8 @@ export default function ContractReview() {
       setForm({ title: '', case_id: '' });
       if (fileInputRef.current) fileInputRef.current.value = '';
       toast({ type: 'success', title: '合同上传成功' }); announceToScreenReader('合同上传成功');
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '上传失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '上传失败') : '上传失败';
       setError(msg);
       toast({ type: 'error', title: '上传失败', description: msg });
     } finally { setUploading(false); }
@@ -370,8 +371,8 @@ export default function ContractReview() {
       setContracts((prev) => prev.map((c) => (c.id === id ? result : c)));
       if (selectedContract?.id === id) setSelectedContract(result);
       toast({ type: 'success', title: '合同审查完成' }); announceToScreenReader('合同审查完成');
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '审查失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '审查失败') : '审查失败';
       setError(msg);
       toast({ type: 'error', title: '审查失败', description: msg });
       loadContracts();
@@ -408,8 +409,8 @@ export default function ContractReview() {
       setDraftForm({ title: '', description: '', case_id: '' });
       setDraftFile(null);
       toast({ type: 'success', title: '合同起草完成' }); announceToScreenReader('合同起草完成');
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '起草失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '起草失败') : '起草失败';
       setError(msg);
       toast({ type: 'error', title: '起草失败', description: msg });
     } finally { setDrafting(false); }
@@ -469,7 +470,7 @@ export default function ContractReview() {
         setSuggestedFixes('暂无风险项，请先进行合同审查。');
       }
       toast({ type: 'success', title: '修改建议已生成' });
-    } catch (e: any) {
+    } catch (e: unknown) {
       setError('生成修改建议失败');
       toast({ type: 'error', title: '生成修改建议失败' });
     } finally { setSuggestingFixes(false); }
@@ -518,8 +519,8 @@ export default function ContractReview() {
       const result = await contractApi.upload(file, title);
       setContracts((prev) => [result, ...prev]);
       toast({ type: 'success', title: '合同上传成功' }); announceToScreenReader('合同上传成功');
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '上传失败';
+    } catch (e: unknown) {
+      const msg = e instanceof AxiosError ? (e.response?.data?.detail || '上传失败') : '上传失败';
       setError(msg);
       toast({ type: 'error', title: '上传失败', description: msg });
     } finally { setUploading(false); }

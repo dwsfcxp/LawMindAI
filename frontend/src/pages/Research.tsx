@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { BookOpen, Loader2, Trash2, FileText, Upload, Download, ChevronDown, ChevronRight, AlertCircle, X, Copy, Check, Columns, Type, PanelLeftClose, PanelLeft } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { researchApi, caseApi, documentApi, knowledgeApi, type ResearchReport as ReportType, type Case as CaseType, type KnowledgeItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -155,11 +156,12 @@ export default function Research() {
       clearAutoSave('research_query');
       // On mobile, auto-switch to report view
       setShowSidebar(false);
-    } catch (e: any) {
-      const msg = '研究失败: ' + (e.response?.data?.detail || e.message || '未知错误');
+    } catch (e: unknown) {
+      const detail = e instanceof AxiosError ? (e.response?.data?.detail || e.message) : (e instanceof Error ? e.message : null);
+      const msg = '研究失败: ' + (detail || '未知错误');
       setError(msg);
-      toast({ type: 'error', title: '研究失败', description: e.response?.data?.detail || e.message || '未知错误' });
-      announceToScreenReader('研究失败: ' + (e.response?.data?.detail || e.message || '未知错误'), 'assertive');
+      toast({ type: 'error', title: '研究失败', description: detail || '未知错误' });
+      announceToScreenReader('研究失败: ' + (detail || '未知错误'), 'assertive');
     } finally {
       setGenerating(false);
     }
@@ -213,8 +215,8 @@ export default function Research() {
         setError(result.text || '文件文字提取失败');
         toast({ type: 'error', title: '文件文字提取失败' });
       }
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || '文件上传失败';
+    } catch (err: unknown) {
+      const msg = err instanceof AxiosError ? (err.response?.data?.detail || '文件上传失败') : '文件上传失败';
       setError(msg);
       toast({ type: 'error', title: '文件上传失败', description: msg });
     } finally {

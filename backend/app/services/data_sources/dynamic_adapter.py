@@ -277,7 +277,8 @@ class DynamicExternalApiAdapter(LegalDataSourceAdapter):
             url = self._build_url(self._health_check_path)
             resp = await self._client.get(url, headers=self._get_headers())
             return resp.status_code < 400
-        except Exception:
+        except Exception as e:
+            logger.warning("Dynamic API health_check failed [%s]: %s", self.description, e)
             return False
 
     async def aclose(self):
@@ -311,6 +312,6 @@ def unregister_dynamic_adapter(config_id: int):
                 asyncio.ensure_future(adapter.aclose())
             else:
                 loop.run_until_complete(adapter.aclose())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Error closing adapter during unregister [%s]: %s", key, e)
     DataSourceRegistry.unregister(key)

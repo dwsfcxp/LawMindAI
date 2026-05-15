@@ -21,7 +21,7 @@ import {
   Search,
   Layers,
 } from 'lucide-react';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import { documentApi, caseApi, researchApi } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import type { Document, Case, CaseCreate, ResearchReport } from '@/lib/api';
@@ -301,11 +301,11 @@ export default function DocumentGenerate() {
       announceToScreenReader('文书生成完成');
       clearAutoSave('doc_gen_caseFacts');
       clearAutoSave('doc_gen_extraInstructions');
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (axios.isCancel(err)) {
         setError('生成已取消');
       } else {
-        const msg = err.response?.data?.detail || '文书生成失败，请重试';
+        const msg = err instanceof AxiosError ? (err.response?.data?.detail || '文书生成失败，请重试') : '文书生成失败，请重试';
         setError(msg);
         toast({ type: 'error', title: '文书生成失败', description: msg });
       }
@@ -458,8 +458,8 @@ export default function DocumentGenerate() {
         setError(result.text || '文件文字提取失败');
         toast({ type: 'error', title: '文件文字提取失败' });
       }
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || '文件上传失败';
+    } catch (err: unknown) {
+      const msg = err instanceof AxiosError ? (err.response?.data?.detail || '文件上传失败') : '文件上传失败';
       setError(msg);
       toast({ type: 'error', title: '文件上传失败', description: msg });
     } finally {
@@ -527,8 +527,9 @@ export default function DocumentGenerate() {
           research_report_ids: selectedReportIds.length > 0 ? selectedReportIds : undefined,
         });
         results.push(doc);
-      } catch (err: any) {
-        toast({ type: 'error', title: `${docLabel} 生成失败`, description: err.response?.data?.detail || '请重试' });
+      } catch (err: unknown) {
+        const detail = err instanceof AxiosError ? (err.response?.data?.detail || '请重试') : '请重试';
+        toast({ type: 'error', title: `${docLabel} 生成失败`, description: detail });
       }
     }
 

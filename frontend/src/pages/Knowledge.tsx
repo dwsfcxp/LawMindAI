@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BookOpen, Plus, Trash2, Loader2, Tag, Search, FileText, X, Upload, AlertCircle, Eye, CheckSquare, Square, BarChart3, Clock, Download, Layers } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { knowledgeApi, type KnowledgeItem, type KnowledgeStats } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
@@ -102,9 +103,9 @@ function Knowledge() {
       setUploadProgress(100);
       loadData();
       toast({ type: 'success', title: '文件上传成功' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearInterval(progressInterval);
-      setError(err.response?.data?.detail || '上传失败');
+      setError(err instanceof AxiosError ? (err.response?.data?.detail || '上传失败') : '上传失败');
     } finally {
       setTimeout(() => {
         setUploading(false);

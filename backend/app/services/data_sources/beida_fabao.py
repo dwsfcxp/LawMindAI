@@ -242,7 +242,8 @@ class BeidaFabaoAdapter(LegalDataSourceAdapter):
                 _MCP_HEALTH_TIMEOUT,
             )
             return result is not None
-        except Exception:
+        except Exception as e:
+            logger.warning("北大法宝 health_check 失败: %s", e)
             return False
 
 

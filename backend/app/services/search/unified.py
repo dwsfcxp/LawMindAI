@@ -273,7 +273,7 @@ class UnifiedSearchService:
                 ))
             return results
         except Exception as e:
-            logger.warning(f"AI law search failed: {e}")
+            logger.warning("AI law search failed: %s", e)
             return []
 
     async def _search_cases_ai(self, query: str, limit: int) -> list[CaseSearchResult]:
@@ -305,7 +305,7 @@ class UnifiedSearchService:
                 ))
             return results
         except Exception as e:
-            logger.warning(f"AI case search failed: {e}")
+            logger.warning("AI case search failed: %s", e)
             return []
 
     def _parse_json_array(self, text: str) -> list[dict]:
@@ -360,7 +360,7 @@ class UnifiedSearchService:
                 ))
             return results
         except Exception as e:
-            logger.warning(f"Vector statute search failed: {e}")
+            logger.warning("Vector statute search failed: %s", e)
             return []
 
     async def _search_cases_vector(self, query: str, limit: int) -> list[CaseSearchResult]:
@@ -384,7 +384,7 @@ class UnifiedSearchService:
                 ))
             return results
         except Exception as e:
-            logger.warning(f"Vector case search failed: {e}")
+            logger.warning("Vector case search failed: %s", e)
             return []
 
     async def _search_external_laws(self, query: str, limit: int) -> list[LawSearchResult]:
@@ -396,8 +396,9 @@ class UnifiedSearchService:
                 try:
                     items = await adapter.search_law(query, limit=limit)
                     results.extend(items)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("外部数据源 %s search_law 失败: %s", name, e)
             return results[:limit]
-        except Exception:
+        except Exception as e:
+            logger.warning("外部法律检索失败: %s", e)
             return []

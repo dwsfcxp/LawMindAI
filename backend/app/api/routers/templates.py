@@ -59,7 +59,7 @@ async def list_templates(
         data = [TemplateOut.model_validate(t).model_dump(mode="json") for t in items]
         return JSONResponse(content=data, headers={"X-Total-Count": str(total)})
     except Exception as e:
-        logger.error(f"List templates failed: {e}")
+        logger.error("List templates failed: %s", e)
         raise HTTPException(500, "查询模板列表失败")
 
 
@@ -82,7 +82,7 @@ async def create_template(
         await db.refresh(tmpl)
         return tmpl
     except Exception as e:
-        logger.error(f"Create template failed: {e}")
+        logger.error("Create template failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "创建模板失败")
 
@@ -101,7 +101,7 @@ async def get_template(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get template failed: {e}")
+        logger.error("Get template failed: %s", e)
         raise HTTPException(500, "查询模板失败")
 
 
@@ -124,7 +124,7 @@ async def update_template(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update template failed: {e}")
+        logger.error("Update template failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "更新模板失败")
 
@@ -145,6 +145,6 @@ async def delete_template(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete template failed: {e}")
+        logger.error("Delete template failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除模板失败")

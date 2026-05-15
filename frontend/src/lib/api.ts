@@ -82,14 +82,14 @@ export function cancelRequest(key: string) {
 }
 
 // ── Request deduplication ──────────────────────────────────────────────
-const pendingRequests = new Map<string, Promise<any>>();
+const pendingRequests = new Map<string, Promise<unknown>>();
 
 /**
  * Deduplicate concurrent GET requests with the same URL+params.
  * If an identical request is already in-flight, returns the same Promise.
  * Otherwise, makes the request and caches it until completion.
  */
-export function dedupedGet<T>(url: string, params?: Record<string, any>, config?: AxiosRequestConfig): Promise<T> {
+export function dedupedGet<T>(url: string, params?: Record<string, unknown>, config?: AxiosRequestConfig): Promise<T> {
   const cacheKey = `GET:${url}:${JSON.stringify(params || {})}`;
   const existing = pendingRequests.get(cacheKey);
   if (existing) return existing;
@@ -146,6 +146,22 @@ export interface User {
   role: string;
 }
 
+export interface LawSearchResult {
+  source: string;
+  title: string;
+  content: string;
+  relevance_score: number;
+}
+
+export interface CaseSearchResult {
+  source: string;
+  title: string;
+  court: string;
+  date: string;
+  content: string;
+  relevance_score: number;
+}
+
 export interface Case {
   id: number;
   title: string;
@@ -179,7 +195,7 @@ export interface Document {
   version: number;
   case_id?: number;
   template_id?: number;
-  ai_metadata?: any;
+  ai_metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -189,10 +205,10 @@ export interface Template {
   name: string;
   type: string;
   description?: string;
-  structure?: any;
+  structure?: Record<string, unknown>;
   ai_prompt?: string;
-  format_rules?: any;
-  variables?: any[];
+  format_rules?: Record<string, unknown>;
+  variables?: Record<string, unknown>[];
   is_public: boolean;
   created_at: string;
   updated_at: string;
@@ -200,8 +216,8 @@ export interface Template {
 
 export interface SearchResults {
   query: string;
-  laws: any[];
-  cases: any[];
+  laws: LawSearchResult[];
+  cases: CaseSearchResult[];
   total: number;
   sources_used: string[];
 }
@@ -209,7 +225,7 @@ export interface SearchResults {
 // ── Auth API ───────────────────────────────────────────────────────────
 
 export const authApi = {
-  login: async (email: string, password: string): Promise<{ access_token: string; user: any }> => {
+  login: async (email: string, password: string): Promise<{ access_token: string; user: User }> => {
     const res = await apiClient.post('/auth/login', { email, password }, { timeout: TIMEOUT.medium });
     const token = res.data.access_token;
     const userRes = await apiClient.get('/auth/me', {
@@ -223,7 +239,7 @@ export const authApi = {
     email: string;
     password: string;
     name: string;
-  }): Promise<{ access_token: string; user: any }> => {
+  }): Promise<{ access_token: string; user: User }> => {
     await apiClient.post('/auth/register', data, { timeout: TIMEOUT.medium });
     const loginRes = await apiClient.post('/auth/login', {
       email: data.email,
@@ -360,7 +376,7 @@ export const documentApi = {
 
   verifyLaws: async (id: number): Promise<{
     document_id: number;
-    verification_results: any[];
+    verification_results: Record<string, unknown>[];
     total: number;
   }> => {
     const res = await apiClient.post(`/documents/${id}/verify-laws`, null, {
@@ -383,19 +399,85 @@ export const documentApi = {
     case_facts: string;
     extra_instructions?: string;
     research_report_ids?: number[];
-  }): Promise<{ documents: any[]; consistency_check: any; total: number }> => {
+  }): Promise<{ documents: Record<string, unknown>[]; consistency_check: Record<string, unknown>; total: number }> => {
     const res = await apiClient.post('/documents/generate-bundle', data, {
       timeout: TIMEOUT.ai,
     });
     return res.data;
   },
 
+  generateStream: (
+    data: {
+      type: string;
+      case_facts: string;
+      case_id?: number;
+      template_id?: number;
+      extra_instructions?: string;
+      research_report_ids?: number[];
+    },
+    onProgress: (event: { step: string; label: string; elapsed: number }) => void,
+    onError: (error: string) => void,
+    onComplete: (documentId: number) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+    const token = localStorage.getItem('token');
+
+    fetch('/api/v1/documents/generate-stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify(data),
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: '生成失败' }));
+        onError(err.detail || '生成失败');
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) { onError('无法读取响应流'); return; }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              if (event.step === 'completed') {
+                onComplete(event.document_id);
+              } else if (event.step === 'error') {
+                onError(event.error || event.label);
+              } else {
+                onProgress(event);
+              }
+            } catch { /* skip malformed events */ }
+          }
+        }
+      }
+    }).catch((e) => {
+      if (e.name !== 'AbortError') onError('网络错误，请重试');
+    });
+
+    return controller;
+  },
+
   qualityCheck: async (id: number): Promise<{
     document_id: number;
     quality_check: {
       passed: boolean;
-      issues: any[];
-      checks: any[];
+      issues: Record<string, unknown>[];
+      checks: Record<string, unknown>[];
       quality_score: number;
       summary: string;
     };
@@ -415,7 +497,7 @@ export const templateApi = {
     return res.data;
   },
 
-  create: async (data: any): Promise<Template> => {
+  create: async (data: Record<string, unknown>): Promise<Template> => {
     const res = await apiClient.post('/templates', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
@@ -425,7 +507,7 @@ export const templateApi = {
     return res.data;
   },
 
-  update: async (id: number, data: any): Promise<Template> => {
+  update: async (id: number, data: Record<string, unknown>): Promise<Template> => {
     const res = await apiClient.put(`/templates/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
@@ -595,7 +677,7 @@ export const llmSettingsApi = {
     return res.data;
   },
 
-  presets: async (): Promise<any[]> => {
+  presets: async (): Promise<Record<string, unknown>[]> => {
     const res = await apiClient.get('/llm-settings/presets', { timeout: TIMEOUT.short });
     return res.data;
   },
@@ -667,12 +749,12 @@ export interface VectorStats {
 }
 
 export const vectorApi = {
-  ingest: async (collection: string, items: any[]): Promise<any> => {
+  ingest: async (collection: string, items: Record<string, unknown>[]): Promise<Record<string, unknown>> => {
     const res = await apiClient.post('/vector/ingest', { collection, items }, { timeout: TIMEOUT.long });
     return res.data;
   },
 
-  search: async (query: string, collection: string = 'all', top_k: number = 10): Promise<any> => {
+  search: async (query: string, collection: string = 'all', top_k: number = 10): Promise<Record<string, unknown>> => {
     const res = await apiClient.post('/vector/search', { query, collection, top_k }, { timeout: TIMEOUT.medium });
     return res.data;
   },
@@ -933,12 +1015,12 @@ export const externalApiConfigApi = {
     return res.data;
   },
 
-  create: async (data: any): Promise<ExternalApiConfig> => {
+  create: async (data: Record<string, unknown>): Promise<ExternalApiConfig> => {
     const res = await apiClient.post('/external-apis', data, { timeout: TIMEOUT.medium });
     return res.data;
   },
 
-  update: async (id: number, data: any): Promise<ExternalApiConfig> => {
+  update: async (id: number, data: Record<string, unknown>): Promise<ExternalApiConfig> => {
     const res = await apiClient.put(`/external-apis/${id}`, data, { timeout: TIMEOUT.medium });
     return res.data;
   },
@@ -1005,7 +1087,7 @@ export interface LawVerifyResult {
   quoted_text: string;
   actual_text: string;
   overall_consistent: boolean;
-  sources: any[];
+  sources: Record<string, unknown>[];
   recommendation: string;
 }
 

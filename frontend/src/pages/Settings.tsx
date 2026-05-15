@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Settings as SettingsIcon, Plus, Trash2, CheckCircle, XCircle, Loader2, Zap, Globe, Building2, Lock, Database, Link2, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Server, AlertCircle, Download, Upload, Save, RotateCcw, Activity, RefreshCw, TestTube, BarChart3, ShieldCheck, Clock } from 'lucide-react';
+import { AxiosError } from 'axios';
 import { llmSettingsApi, externalApiConfigApi, appConfigApi, apiClient, type LLMSetting, type ExternalApiConfig, type ExternalApiPreset, type AppConfigItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
@@ -267,7 +268,7 @@ export default function Settings() {
   const handleDelete = useCallback((id: number) => {
     setConfirmDialog({ message: '确定删除此配置？', onConfirm: async () => {
       try { await llmSettingsApi.delete(id); toast({ type: 'success', title: '配置已删除' }); loadConfigs(); }
-      catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
+      catch (e: unknown) { toast({ type: 'error', title: '删除失败', description: e instanceof AxiosError ? (e.response?.data?.detail || '未知错误') : '未知错误' }); }
       setConfirmDialog(null);
     }});
   }, [toast, loadConfigs]);
@@ -281,7 +282,7 @@ export default function Settings() {
       setConnectionStatuses(prev => ({ ...prev, [`llm_${c.id}`]: result.success ? 'connected' : 'disconnected' }));
       if (result.success) toast({ type: 'success', title: '连接测试成功', description: result.message });
       else toast({ type: 'warning', title: '连接测试失败', description: result.message });
-    } catch (e: any) { setTestResult({ id: c.id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
+    } catch (e: unknown) { setTestResult({ id: c.id, success: false, message: e instanceof Error ? e.message : '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
     finally { setTesting(null); }
   }, [toast]);
 
@@ -290,7 +291,7 @@ export default function Settings() {
     try {
       const result = await llmSettingsApi.testConnectivity({ base_url: preset.base_url, api_key: '', model_name: preset.model_name });
       setTestResult({ id: -1, success: result.success, message: `${preset.name}: ${result.message}` });
-    } catch (e: any) { setTestResult({ id: -1, success: false, message: `${preset.name}: 测试失败` }); }
+    } catch (e: unknown) { setTestResult({ id: -1, success: false, message: `${preset.name}: 测试失败` }); }
     finally { setQuickTesting(null); }
   }, []);
 
@@ -356,14 +357,14 @@ export default function Settings() {
   const handleApiDelete = useCallback((id: number) => {
     setConfirmDialog({ message: '确定删除此外部API配置？', onConfirm: async () => {
       try { await externalApiConfigApi.delete(id); toast({ type: 'success', title: '外部接口已删除' }); loadApiConfigs(); }
-      catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
+      catch (e: unknown) { toast({ type: 'error', title: '删除失败', description: e instanceof AxiosError ? (e.response?.data?.detail || '未知错误') : '未知错误' }); }
       setConfirmDialog(null);
     }});
   }, [toast, loadApiConfigs]);
 
   const handleApiToggle = useCallback(async (id: number) => {
     try { await externalApiConfigApi.toggle(id); loadApiConfigs(); }
-    catch (e: any) { toast({ type: 'error', title: '切换失败', description: e.response?.data?.detail || '未知错误' }); }
+    catch (e: unknown) { toast({ type: 'error', title: '切换失败', description: e instanceof AxiosError ? (e.response?.data?.detail || '未知错误') : '未知错误' }); }
   }, [loadApiConfigs, toast]);
 
   const handleApiTest = useCallback(async (id: number) => {
@@ -376,7 +377,7 @@ export default function Settings() {
       setConnectionStatuses(prev => ({ ...prev, [`api_${id}`]: result.success ? 'connected' : 'disconnected' }));
       if (result.success) toast({ type: 'success', title: '接口测试成功', description: `延迟 ${result.latency_ms}ms` });
       else toast({ type: 'warning', title: '接口测试失败', description: result.message });
-    } catch (e: any) { setApiTestResult({ id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
+    } catch (e: unknown) { setApiTestResult({ id, success: false, message: e instanceof Error ? e.message : '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
     finally { setTestingApi(null); }
   }, [apiConfigs, toast]);
 

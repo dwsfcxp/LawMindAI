@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 app = Server("lawmind-ai")
 
+_ALLOWED_DOC_TYPES = {
+    "complaint", "answer", "appeal", "agency_opinion",
+    "defense_opinion", "legal_opinion", "lawyer_letter",
+}
+
 
 def _get_services():
     """延迟导入避免循环依赖"""
@@ -104,6 +109,47 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     settings, client = _get_services()
     model = settings.CLAUDE_MODEL
 
+    # ---------- Input validation ----------
+    if name == "lawmind_search_law":
+        query = arguments.get("query")
+        if not query or not isinstance(query, str) or not query.strip():
+            return [types.TextContent(type="text", text="错误：搜索关键词(query)不能为空")]
+
+    elif name == "lawmind_generate_document":
+        case_facts = arguments.get("case_facts")
+        if not case_facts or not isinstance(case_facts, str) or not case_facts.strip():
+            return [types.TextContent(type="text", text="错误：案情描述(case_facts)不能为空")]
+        doc_type = arguments.get("doc_type")
+        if not doc_type or not isinstance(doc_type, str) or doc_type not in _ALLOWED_DOC_TYPES:
+            return [types.TextContent(
+                type="text",
+                text=f"错误：文书类型(doc_type)无效，允许的值: {', '.join(sorted(_ALLOWED_DOC_TYPES))}",
+            )]
+
+    elif name == "lawmind_review_contract":
+        contract_text = arguments.get("contract_text")
+        if not contract_text or not isinstance(contract_text, str) or not contract_text.strip():
+            return [types.TextContent(type="text", text="错误：合同文本(contract_text)不能为空")]
+
+    elif name == "lawmind_analyze_evidence":
+        evidence_text = arguments.get("evidence_text")
+        if not evidence_text or not isinstance(evidence_text, str) or not evidence_text.strip():
+            return [types.TextContent(type="text", text="错误：证据内容(evidence_text)不能为空")]
+
+    elif name == "lawmind_cross_examine":
+        evidence_text = arguments.get("evidence_text")
+        if not evidence_text or not isinstance(evidence_text, str) or not evidence_text.strip():
+            return [types.TextContent(type="text", text="错误：证据内容(evidence_text)不能为空")]
+        evidence_type = arguments.get("evidence_type")
+        if not evidence_type or not isinstance(evidence_type, str) or not evidence_type.strip():
+            return [types.TextContent(type="text", text="错误：证据类型(evidence_type)不能为空")]
+
+    elif name == "lawmind_legal_research":
+        query = arguments.get("query")
+        if not query or not isinstance(query, str) or not query.strip():
+            return [types.TextContent(type="text", text="错误：研究问题(query)不能为空")]
+    # ---------- End validation ----------
+
     try:
         if name == "lawmind_search_law":
             return await _search_law(arguments["query"], settings, client, model)
@@ -127,7 +173,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             return [types.TextContent(type="text", text=f"未知工具: {name}")]
 
     except Exception as e:
-        logger.error(f"MCP tool {name} failed: {e}")
+        logger.error("MCP tool %s failed: %s", name, e)
         return [types.TextContent(type="text", text=f"工具调用失败: {e}")]
 
 
@@ -144,8 +190,8 @@ async def _search_law(query: str, settings, client, model) -> list[types.TextCon
             result = await adapter.search(query, {"limit": 10})
             if result:
                 results_text = result.get("text", "") or str(result)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("北大法宝MCP检索失败，将使用AI回退: %s", e)
 
     if not results_text:
         # Fallback: use AI knowledge

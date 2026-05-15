@@ -1,5 +1,7 @@
 """自定义API数据源适配器 — 配置驱动，无需写代码"""
 
+import logging
+
 import yaml
 import httpx
 from pathlib import Path
@@ -9,6 +11,8 @@ from app.services.data_sources.base import (
     CaseSearchResult,
     DataSourceRegistry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CustomAPIAdapter(LegalDataSourceAdapter):
@@ -63,7 +67,8 @@ class CustomAPIAdapter(LegalDataSourceAdapter):
                     content=item.get("full_text", ""),
                 ))
             return results
-        except Exception:
+        except Exception as e:
+            logger.warning("Custom API search_law failed [%s]: %s", self.description, e)
             return []
 
     async def search_case(self, query: str, **filters) -> list[CaseSearchResult]:
@@ -81,14 +86,16 @@ class CustomAPIAdapter(LegalDataSourceAdapter):
                     content=item.get("summary", ""),
                 ))
             return results
-        except Exception:
+        except Exception as e:
+            logger.warning("Custom API search_case failed [%s]: %s", self.description, e)
             return []
 
     async def get_provision(self, doc_id: str, article: str = None) -> dict | None:
         try:
             raw = await self._call_endpoint("get_provision", doc_id=doc_id, article=article)
             return raw if isinstance(raw, dict) else None
-        except Exception:
+        except Exception as e:
+            logger.warning("Custom API get_provision failed [%s]: %s", self.description, e)
             return None
 
     async def health_check(self) -> bool:
@@ -99,7 +106,8 @@ class CustomAPIAdapter(LegalDataSourceAdapter):
             url = self.base_url + hc["path"]
             resp = await self._client.get(url, headers=self._get_headers())
             return resp.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.warning("Custom API health_check failed [%s]: %s", self.description, e)
             return False
 
     async def aclose(self):
@@ -117,5 +125,5 @@ def load_custom_data_sources(config_dir: str = "config/data_sources"):
         try:
             adapter = CustomAPIAdapter(str(f))
             DataSourceRegistry.register(adapter)
-        except Exception:
-            pass  # 跳过无效配置
+        except Exception as e:
+            logger.warning("Failed to load custom data source %s: %s", f, e)

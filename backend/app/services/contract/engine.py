@@ -222,14 +222,14 @@ async def review_contract(
         raw_text = response.content[0].text.strip() if response.content else ""
         # Max length protection
         if len(raw_text) > MAX_LLM_RESPONSE_CHARS:
-            logger.warning(f"LLM response truncated: {len(raw_text)} > {MAX_LLM_RESPONSE_CHARS}")
+            logger.warning("LLM response truncated: %d > %d", len(raw_text), MAX_LLM_RESPONSE_CHARS)
             raw_text = raw_text[:MAX_LLM_RESPONSE_CHARS]
         if raw_text.startswith("```"):
             raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
         result = json.loads(raw_text)
     except json.JSONDecodeError as e:
-        logger.warning(f"AI contract review JSON parse failed: {e}")
+        logger.warning("AI contract review JSON parse failed: %s", e)
         result = {
             "risk_items": [],
             "summary": f"审查引擎返回格式异常，原始响应:\n{raw_text[:2000]}",
@@ -238,7 +238,7 @@ async def review_contract(
             "missing_clauses": [],
         }
     except Exception as e:
-        logger.error(f"AI contract review call failed: {e}")
+        logger.error("AI contract review call failed: %s", e)
         return {
             "report": f"审查服务暂时不可用，请稍后重试。",
             "risk_items": [],

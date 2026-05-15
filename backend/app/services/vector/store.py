@@ -48,18 +48,30 @@ class VectorStoreService:
     # ── Connection management ────────────────────────────────────────────
 
     def _ensure_connection(self) -> bool:
-        """Ensure ChromaDB is connected.  Uses retry with exponential backoff."""
+        """Ensure ChromaDB is connected.  Uses retry with exponential backoff.
+
+        Note: This is a synchronous method. Callers should wrap it with
+        ``asyncio.to_thread()`` to avoid blocking the event loop.
+        """
         if self._client is not None:
             return True
 
         for attempt in range(_CONNECT_MAX_RETRIES):
             try:
                 import chromadb
-                self._client = chromadb.HttpClient(
-                    host=self._settings.CHROMA_HOST,
-                    port=self._settings.CHROMA_PORT,
-                )
-                self._client.heartbeat()
+                # Try HTTP client first (production / Docker)
+                try:
+                    self._client = chromadb.HttpClient(
+                        host=self._settings.CHROMA_HOST,
+                        port=self._settings.CHROMA_PORT,
+                    )
+                    self._client.heartbeat()
+                except Exception:
+                    # Fallback to embedded PersistentClient for local dev
+                    from pathlib import Path
+                    db_path = Path(self._settings.UPLOAD_DIR).parent / "chroma_data"
+                    db_path.mkdir(parents=True, exist_ok=True)
+                    self._client = chromadb.PersistentClient(path=str(db_path))
                 self._cases_col = self._client.get_or_create_collection(
                     "legal_cases",
                     metadata={"hnsw:space": "cosine", "description": "法律案例向量库"},
@@ -113,7 +125,7 @@ class VectorStoreService:
 
     async def add_cases(self, items: list[dict]) -> int:
         """Batch-add cases."""
-        if not self._ensure_connection() or not items:
+        if not await asyncio.to_thread(self._ensure_connection) or not items:
             return 0
         ids = [str(it["id"]) for it in items]
         docs = [f"{it['title']}\n{it['content']}" for it in items]
@@ -129,7 +141,7 @@ class VectorStoreService:
 
     async def add_statutes(self, items: list[dict]) -> int:
         """Batch-add statutes."""
-        if not self._ensure_connection() or not items:
+        if not await asyncio.to_thread(self._ensure_connection) or not items:
             return 0
         ids = [str(it["id"]) for it in items]
         docs = [f"{it['title']}\n{it['content']}" for it in items]
@@ -148,7 +160,7 @@ class VectorStoreService:
     async def search_cases(self, query: str, top_k: int = 10, collection: str | None = None) -> list[dict]:
         if not query or not query.strip():
             return []
-        if not self._ensure_connection():
+        if not await asyncio.to_thread(self._ensure_connection):
             return []
         if collection == "knowledge" and self._knowledge_col is not None:
             return await self.search_knowledge(query, top_k)
@@ -168,7 +180,7 @@ class VectorStoreService:
     async def search_statutes(self, query: str, top_k: int = 10) -> list[dict]:
         if not query or not query.strip():
             return []
-        if not self._ensure_connection():
+        if not await asyncio.to_thread(self._ensure_connection):
             return []
         try:
             count = self._statutes_col.count()
@@ -186,7 +198,7 @@ class VectorStoreService:
     # ── Delete ────────────────────────────────────────────────────────────
 
     async def delete_cases(self, ids: list[str]) -> bool:
-        if not self._ensure_connection():
+        if not await asyncio.to_thread(self._ensure_connection):
             return False
         try:
             await asyncio.to_thread(self._cases_col.delete, ids=ids)
@@ -198,7 +210,7 @@ class VectorStoreService:
             return False
 
     async def delete_statutes(self, ids: list[str]) -> bool:
-        if not self._ensure_connection():
+        if not await asyncio.to_thread(self._ensure_connection):
             return False
         try:
             await asyncio.to_thread(self._statutes_col.delete, ids=ids)
@@ -212,7 +224,7 @@ class VectorStoreService:
     async def search_knowledge(self, query: str, top_k: int = 10) -> list[dict]:
         if not query or not query.strip():
             return []
-        if not self._ensure_connection() or self._knowledge_col is None:
+        if not await asyncio.to_thread(self._ensure_connection) or self._knowledge_col is None:
             return []
         try:
             count = self._knowledge_col.count()
@@ -228,7 +240,7 @@ class VectorStoreService:
             return []
 
     async def add_knowledge(self, items: list[dict]) -> int:
-        if not self._ensure_connection() or not items or self._knowledge_col is None:
+        if not await asyncio.to_thread(self._ensure_connection) or not items or self._knowledge_col is None:
             return 0
         ids = [str(it["id"]) for it in items]
         docs = [f"{it.get('title', '')}\n{it['content']}" for it in items]
@@ -245,7 +257,7 @@ class VectorStoreService:
             return 0
 
     async def delete_knowledge(self, ids: list[str]) -> bool:
-        if not self._ensure_connection() or self._knowledge_col is None:
+        if not await asyncio.to_thread(self._ensure_connection) or self._knowledge_col is None:
             return False
         try:
             await asyncio.to_thread(self._knowledge_col.delete, ids=ids)
@@ -268,7 +280,7 @@ class VectorStoreService:
             if now - cache_ts < _STATS_CACHE_TTL:
                 return cached
 
-        if not self._ensure_connection():
+        if not await asyncio.to_thread(self._ensure_connection):
             return {"cases_count": 0, "statutes_count": 0, "connected": False}
         try:
             cases_count = await asyncio.to_thread(self._cases_col.count)
