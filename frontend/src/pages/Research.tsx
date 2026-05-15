@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { BookOpen, Loader2, Trash2, FileText, Upload, Download, ChevronDown, ChevronRight, AlertCircle, X, Copy, Check, Columns, Type, PanelLeftClose, PanelLeft } from 'lucide-react';
-import axios, { CancelTokenSource } from 'axios';
 import { researchApi, caseApi, documentApi, knowledgeApi, type ResearchReport as ReportType, type Case as CaseType, type KnowledgeItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -84,8 +83,8 @@ export default function Research() {
   // Mobile panel toggle
   const [showSidebar, setShowSidebar] = useState(true);
 
-  // Request cancellation ref
-  const cancelTokenRef = useRef<CancelTokenSource | null>(null);
+  // Confirmation dialog state (replaces browser confirm())
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
 
   // Memoized filtered source options (excludes already-selected for UI purposes)
   const filteredSourceOptions = useMemo(() => sourceOptions, []);
@@ -134,14 +133,6 @@ export default function Research() {
 
   const handleResearch = useCallback(async () => {
     if (!query.trim()) return;
-
-    // Cancel any previous in-flight request
-    if (cancelTokenRef.current) {
-      cancelTokenRef.current.cancel('New research request initiated');
-    }
-    const source = axios.CancelToken.source();
-    cancelTokenRef.current = source;
-
     setGenerating(true);
     setCurrentReport(null);
     try {
@@ -156,7 +147,7 @@ export default function Research() {
         }
       }
 
-      const report = await researchApi.create({ query: researchQuery, sources, case_id: caseId || undefined }, 'research', source.token);
+      const report = await researchApi.create({ query: researchQuery, sources, case_id: caseId || undefined }, 'research');
       setCurrentReport(report);
       setHistory([report, ...history]);
       toast({ type: 'success', title: '研究完成', description: `已从${sources.length}个来源生成报告` });
@@ -184,9 +175,9 @@ export default function Research() {
     }
   }, []);
 
-  const handleDelete = useCallback(async (id: number) => {
-    if (!confirm('确定删除此报告？')) return;
-    try {
+  const handleDelete = useCallback((id: number) => {
+    setConfirmDialog({ message: '确定删除此报告？', onConfirm: async () => {
+      try {
       await researchApi.delete(id);
       setHistory(prev => prev.filter(r => r.id !== id));
       if (currentReport?.id === id) setCurrentReport(null);
@@ -195,6 +186,8 @@ export default function Research() {
       setError('删除失败，请重试');
       toast({ type: 'error', title: '删除失败' });
     }
+    setConfirmDialog(null);
+    }});
   }, [currentReport, toast]);
 
   const toggleSource = useCallback((key: string) => {
@@ -607,6 +600,19 @@ export default function Research() {
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {/* Confirmation Dialog (replaces browser confirm()) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmDialog(null)} role="dialog" aria-modal="true">
+          <div className="bg-card rounded-xl shadow-lg p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-medium mb-4">{confirmDialog.message}</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDialog(null)} className="px-4 py-2 rounded-lg border text-sm hover:bg-accent">取消</button>
+              <button onClick={() => confirmDialog.onConfirm()} className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90">确定</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
