@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   FileText,
   Sparkles,
@@ -43,7 +43,6 @@ const DOC_TYPES = [
   { value: 'other', label: '其他文书', desc: '其他类型的法律文书' },
 ];
 
-// Iteration 38: Bundle presets
 const BUNDLE_PRESETS = [
   {
     key: 'civil_complaint_full',
@@ -94,6 +93,52 @@ function loadDrafts(): Draft[] {
 function saveDrafts(drafts: Draft[]) {
   localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
 }
+
+/** Memoized document type selector component */
+const DocumentTypeSelector = memo(function DocumentTypeSelector({
+  value,
+  onChange,
+  disabled,
+  selectedLabel,
+  selectedDesc,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  disabled: boolean;
+  selectedLabel: string;
+  selectedDesc: string;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-sm font-medium">
+        文书类型 <span className="text-red-500">*</span>
+      </label>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required
+          disabled={disabled}
+          className="w-full appearance-none rounded-lg border border-input bg-background px-3.5 py-2.5 pr-8 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:opacity-50"
+        >
+          <option value="">请选择文书类型</option>
+          {DOC_TYPES.map((dt) => (
+            <option key={dt.value} value={dt.value}>
+              {dt.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      </div>
+      {selectedDesc && (
+        <p className="mt-1.5 text-xs text-muted-foreground flex items-center gap-1">
+          <FileText className="h-3 w-3" />
+          {selectedDesc}
+        </p>
+      )}
+    </div>
+  );
+});
 
 export default function DocumentGenerate() {
   const { toast } = useToast();
@@ -156,7 +201,7 @@ export default function DocumentGenerate() {
   // Document version history
   const [docVersions, setDocVersions] = useState<{ version: number; updated_at: string; title: string }[]>([]);
 
-  // Iteration 38: Bundle generation state
+  // Bundle generation state
   const [bundleDocTypes, setBundleDocTypes] = useState<string[]>([]);
   const [bundleGenerating, setBundleGenerating] = useState(false);
   const [bundleResults, setBundleResults] = useState<Document[]>([]);
@@ -384,7 +429,7 @@ export default function DocumentGenerate() {
     }
   }, [newCase, toast]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     setDocType('');
     setSelectedCaseId('');
     setCaseFacts('');
@@ -398,7 +443,7 @@ export default function DocumentGenerate() {
     setDocVersions([]);
     setBundleResults([]);
     setBundleDocTypes([]);
-  };
+  }, []);
 
   const handleFileExtract = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -424,7 +469,7 @@ export default function DocumentGenerate() {
   }, [toast]);
 
   // Draft management
-  const handleSaveDraft = () => {
+  const handleSaveDraft = useCallback(() => {
     if (!caseFacts.trim() && !docType) return;
     const draft: Draft = {
       id: Date.now().toString(),
@@ -439,24 +484,26 @@ export default function DocumentGenerate() {
     setDrafts(updated);
     saveDrafts(updated);
     toast({ type: 'success', title: '草稿已保存' });
-  };
+  }, [caseFacts, docType, extraInstructions, selectedCaseId, selectedReportIds, drafts, toast]);
 
-  const handleLoadDraft = (draft: Draft) => {
+  const handleLoadDraft = useCallback((draft: Draft) => {
     setDocType(draft.docType);
     setCaseFacts(draft.caseFacts);
     setExtraInstructions(draft.extraInstructions);
     setSelectedCaseId(draft.selectedCaseId);
     setSelectedReportIds(draft.selectedReportIds);
     setShowDrafts(false);
-  };
+  }, []);
 
-  const handleDeleteDraft = (id: string) => {
-    const updated = drafts.filter(d => d.id !== id);
-    setDrafts(updated);
-    saveDrafts(updated);
-  };
+  const handleDeleteDraft = useCallback((id: string) => {
+    setDrafts(prev => {
+      const updated = prev.filter(d => d.id !== id);
+      saveDrafts(updated);
+      return updated;
+    });
+  }, []);
 
-  // Iteration 38: Bundle generation
+  // Bundle generation
   const handleBundleGenerate = useCallback(async () => {
     if (!caseFacts.trim() || bundleDocTypes.length === 0) return;
 
@@ -492,18 +539,23 @@ export default function DocumentGenerate() {
     }
   }, [caseFacts, bundleDocTypes, selectedCaseId, extraInstructions, selectedReportIds, toast]);
 
-  const toggleBundleDocType = (type: string) => {
+  const toggleBundleDocType = useCallback((type: string) => {
     setBundleDocTypes(prev =>
       prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
     );
-  };
+  }, []);
 
-  const applyBundlePreset = (preset: typeof BUNDLE_PRESETS[0]) => {
+  const applyBundlePreset = useCallback((preset: typeof BUNDLE_PRESETS[0]) => {
     setBundleDocTypes(preset.types);
-  };
+  }, []);
 
   const selectedDocLabel = DOC_TYPES.find((d) => d.value === docType)?.label || '';
   const selectedDocDesc = DOC_TYPES.find((d) => d.value === docType)?.desc || '';
+
+  // Memoized template filtering for bundle mode
+  const bundleTemplateOptions = useMemo(() => {
+    return DOC_TYPES.filter(dt => !bundleDocTypes.includes(dt.value));
+  }, [bundleDocTypes]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 sm:px-0">
@@ -537,7 +589,7 @@ export default function DocumentGenerate() {
         </div>
       </div>
 
-      {/* Mode Toggle - Iteration 38 */}
+      {/* Mode Toggle */}
       <div className="flex gap-1 border-b">
         <button
           onClick={() => setMode('single')}
@@ -593,7 +645,7 @@ export default function DocumentGenerate() {
         </div>
       )}
 
-      {/* Bundle Mode - Iteration 38 */}
+      {/* Bundle Mode */}
       {mode === 'bundle' && (
         <div className="space-y-4">
           {/* Bundle presets */}
@@ -723,34 +775,13 @@ export default function DocumentGenerate() {
           <form onSubmit={mode === 'single' ? handleGenerate : (e) => { e.preventDefault(); handleBundleGenerate(); }} className="space-y-5 rounded-xl border bg-card p-4 sm:p-6 shadow-sm">
             {/* Document Type - single mode only */}
             {mode === 'single' && (
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">
-                  文书类型 <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <select
-                    value={docType}
-                    onChange={(e) => setDocType(e.target.value)}
-                    required
-                    disabled={loading}
-                    className="w-full appearance-none rounded-lg border border-input bg-background px-3.5 py-2.5 pr-8 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:opacity-50"
-                  >
-                    <option value="">请选择文书类型</option>
-                    {DOC_TYPES.map((dt) => (
-                      <option key={dt.value} value={dt.value}>
-                        {dt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-                {selectedDocDesc && (
-                  <p className="mt-1.5 text-xs text-muted-foreground flex items-center gap-1">
-                    <FileText className="h-3 w-3" />
-                    {selectedDocDesc}
-                  </p>
-                )}
-              </div>
+              <DocumentTypeSelector
+                value={docType}
+                onChange={setDocType}
+                disabled={loading}
+                selectedLabel={selectedDocLabel}
+                selectedDesc={selectedDocDesc}
+              />
             )}
 
             {/* Case Selection */}

@@ -54,6 +54,8 @@ class Document(Base):
         Index("ix_documents_owner_case", "owner_id", "case_id"),
         # Composite: list documents by owner + type
         Index("ix_documents_owner_type", "owner_id", "type"),
+        # Composite: list documents by case + status
+        Index("ix_documents_case_status", "case_id", "status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

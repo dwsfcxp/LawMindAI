@@ -80,6 +80,53 @@ class Cache:
                 return True
             return False
 
+    def increment(self, key: str, delta: int = 1, ttl: float | None = None) -> int:
+        """Atomically increment a cached counter.
+
+        If the key does not exist or is expired, it is initialised to
+        ``delta`` (i.e. the first call returns *delta*).  The TTL is reset
+        on every call.
+
+        Returns the new value after incrementing.
+        """
+        effective_ttl = ttl if ttl is not None else self._default_ttl
+        expires_at = time.monotonic() + effective_ttl
+
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is not None:
+                _, current = entry
+                # Guard against non-int stored values
+                new_val = (current if isinstance(current, int) else 0) + delta
+            else:
+                new_val = delta
+            self._store[key] = (expires_at, new_val)
+            return new_val
+
+    def get_or_set(self, key: str, default: Any, ttl: float | None = None) -> Any:
+        """Return the cached value for *key*, or store and return *default*.
+
+        This implements the compute-if-absent pattern: if the key is missing
+        (or expired), *default* is stored under *key* and then returned.
+        """
+        effective_ttl = ttl if ttl is not None else self._default_ttl
+
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is not None:
+                expires_at, value = entry
+                if time.monotonic() <= expires_at:
+                    self._hits += 1
+                    return value
+                # Expired — will be replaced below
+            self._misses += 1
+            new_expires = time.monotonic() + effective_ttl
+            self._store[key] = (new_expires, default)
+            # Evict if over limit
+            if len(self._store) > self._max_size:
+                self._evict_expired()
+            return default
+
     def delete_pattern(self, prefix: str) -> int:
         """Delete all keys starting with the given prefix.
 
@@ -109,11 +156,19 @@ class Cache:
             }
 
     def _evict_expired(self) -> None:
-        """Remove all expired entries (called under lock)."""
+        """Remove all expired entries (called under lock).
+
+        If no expired entries are found and we are still over max_size,
+        evict the oldest entry (smallest monotonic expiry timestamp).
+        """
         now = time.monotonic()
         expired = [k for k, (exp, _) in self._store.items() if now > exp]
         for k in expired:
             del self._store[k]
+        # LRU fallback: if still over limit, remove the oldest entry
+        if len(self._store) > self._max_size:
+            oldest_key = min(self._store, key=lambda k: self._store[k][0])
+            del self._store[oldest_key]
 
     def cleanup(self) -> int:
         """Force cleanup of expired entries. Returns count of removed entries."""

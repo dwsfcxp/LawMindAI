@@ -1,0 +1,84 @@
+# =============================================================================
+# LawMind AI - Docker Ignore
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+*.whl
+
+# Node.js
+node_modules/
+.npm
+.pnpm-store/
+frontend/node_modules/
+frontend/.npm/
+frontend/dist/
+frontend/build/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Uploads (mounted as a volume in production)
+uploads/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Test / CI
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Miscellaneous
+*.bak
+*.tmp
+*.temp

@@ -13,6 +13,9 @@ from app.services.search.unified import UnifiedSearchService
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+MAX_QUERY_LENGTH = 2000
+VALID_RESULT_TYPES = {"law", "case", "all"}
+
 
 @router.post("", response_model=UnifiedSearchResult)
 async def unified_search(
@@ -22,6 +25,12 @@ async def unified_search(
 ):
     if not data.query or not data.query.strip():
         raise HTTPException(400, "搜索内容不能为空")
+
+    if len(data.query) > MAX_QUERY_LENGTH:
+        raise HTTPException(400, f"搜索内容不能超过 {MAX_QUERY_LENGTH} 个字符")
+
+    if data.result_type not in VALID_RESULT_TYPES:
+        raise HTTPException(400, f"无效的搜索类型，允许值: {', '.join(sorted(VALID_RESULT_TYPES))}")
 
     # Rate limit search: 30 per minute per user
     if not check_rate_limit(f"search:{current_user.id}", max_requests=30, window_seconds=60):
@@ -46,7 +55,7 @@ async def unified_search(
             top_k=data.top_k,
         )
         elapsed = time.time() - start
-        logger.info(f"Search completed in {elapsed:.2f}s, query={data.query[:50]!r}")
+        logger.info("Search completed in %.2fs, query=%r", elapsed, data.query[:50])
 
         # Cache the result
         search_cache.set(ckey, result)
@@ -65,5 +74,5 @@ async def unified_search(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Search failed: {e}")
-        raise HTTPException(500, f"搜索失败: {str(e)[:200]}")
+        logger.error("Search failed: %s", e)
+        raise HTTPException(500, "搜索服务暂时不可用，请稍后重试")

@@ -21,8 +21,8 @@ async def _check_database() -> dict:
         from app.core.database import db_health_check
         result = await db_health_check()
         return {"status": result.get("status", "ok"), "latency_ms": result.get("latency_ms")}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        return {"status": "error"}
 
 
 async def _check_chromadb() -> dict:
@@ -35,9 +35,9 @@ async def _check_chromadb() -> dict:
         latency_ms = round((time.monotonic() - start) * 1000, 2)
         if connected:
             return {"status": "ok", "latency_ms": latency_ms}
-        return {"status": "unavailable", "latency_ms": latency_ms, "error": "connection failed"}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "unavailable", "latency_ms": latency_ms}
+    except Exception:
+        return {"status": "error"}
 
 
 async def _check_llm() -> dict:
@@ -46,14 +46,12 @@ async def _check_llm() -> dict:
         from app.config import get_settings
         settings = get_settings()
         if not settings.CLAUDE_API_KEY:
-            return {"status": "not_configured", "note": "No API key set"}
-        # We do NOT make a real LLM call here to avoid latency/cost.
-        # Just verify the client can be instantiated.
+            return {"status": "not_configured"}
         from app.services.llm_client import create_llm_client_from_settings
-        client = create_llm_client_from_settings(settings)
+        create_llm_client_from_settings(settings)
         return {"status": "configured", "model": settings.CLAUDE_MODEL}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        return {"status": "error"}
 
 
 @router.get("/health")

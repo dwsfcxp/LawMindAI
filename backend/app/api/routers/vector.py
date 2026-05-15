@@ -37,8 +37,8 @@ async def ingest_data(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Vector ingest failed: {e}")
-        raise HTTPException(500, f"向量数据导入失败: {str(e)[:200]}")
+        logger.error("Vector ingest failed: %s", e)
+        raise HTTPException(500, "向量数据导入失败，请稍后重试")
     finally:
         invalidate_on_create("vector")
 
@@ -105,13 +105,13 @@ async def search_vector(
         if len(results) > 1 and not isinstance(results[1], Exception):
             statutes = [VectorSearchResult(**r) for r in results[1]]
 
-        logger.info(f"Vector search completed in {time.time()-start:.2f}s")
+        logger.info("Vector search completed in %.2fs", time.time() - start)
         return VectorSearchResponse(query=data.query, cases=cases, statutes=statutes)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Vector search failed: {e}")
-        raise HTTPException(500, f"向量检索失败: {str(e)[:200]}")
+        logger.error("Vector search failed: %s", e)
+        raise HTTPException(500, "向量检索失败，请稍后重试")
 
 
 @router.get("/stats", response_model=VectorStats)
@@ -127,7 +127,7 @@ async def get_stats(current_user: User = Depends(get_current_user)):
         vector_stats_cache.set("vector_stats", stats)
         return VectorStats(**stats)
     except Exception as e:
-        logger.error(f"Get vector stats failed: {e}")
+        logger.error("Get vector stats failed: %s", e)
         raise HTTPException(500, "查询向量库统计失败")
 
 
@@ -149,5 +149,5 @@ async def delete_item(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Vector delete failed: {e}")
-        raise HTTPException(500, f"向量数据删除失败: {str(e)[:200]}")
+        logger.error("Vector delete failed: %s", e)
+        raise HTTPException(500, "向量数据删除失败，请稍后重试")

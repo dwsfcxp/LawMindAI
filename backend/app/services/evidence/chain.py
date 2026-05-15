@@ -17,6 +17,12 @@ _MAX_RESPONSE_LENGTH = 32000
 # Maximum number of evidence items to include in prompt.
 _MAX_EVIDENCE_ITEMS = 50
 
+# Maximum length for individual evidence text.
+_MAX_EVIDENCE_TEXT_LENGTH = 100000
+
+# Maximum length for case description.
+_MAX_CASE_DESC_LENGTH = 50000
+
 
 async def analyze_evidence_chain(
     case_description: str,
@@ -39,6 +45,9 @@ async def analyze_evidence_chain(
     # Guard: empty case description.
     if not case_description or not case_description.strip():
         case_description = "（未提供案件描述）"
+    elif len(case_description) > _MAX_CASE_DESC_LENGTH:
+        logger.warning("Case description truncated: %d > %d chars", len(case_description), _MAX_CASE_DESC_LENGTH)
+        case_description = case_description[:_MAX_CASE_DESC_LENGTH]
 
     settings = get_settings()
     client = create_llm_client_from_settings(settings)
@@ -47,8 +56,14 @@ async def analyze_evidence_chain(
     # Build evidence summary, truncating per-item text.
     evidence_summary = []
     for ev in evidence_list[:_MAX_EVIDENCE_ITEMS]:
-        text_preview = (ev.get("ocr_text") or "")[:500]
-        analysis_preview = (ev.get("analysis") or "")[:300]
+        ocr_text = ev.get("ocr_text") or ""
+        if len(ocr_text) > _MAX_EVIDENCE_TEXT_LENGTH:
+            ocr_text = ocr_text[:_MAX_EVIDENCE_TEXT_LENGTH]
+        text_preview = ocr_text[:500]
+        analysis_text = ev.get("analysis") or ""
+        if len(analysis_text) > _MAX_EVIDENCE_TEXT_LENGTH:
+            analysis_text = analysis_text[:_MAX_EVIDENCE_TEXT_LENGTH]
+        analysis_preview = analysis_text[:300]
         evidence_summary.append({
             "id": ev.get("id"),
             "title": ev.get("title", ""),
@@ -123,7 +138,6 @@ async def analyze_evidence_chain(
         }
     except json.JSONDecodeError as e:
         logger.warning(f"Evidence chain analysis JSON parse failed: {e}")
-        raw_text = raw[:500] if raw else ""
         result = {
             "completeness_score": None,
             "chain_status": "分析失败",
@@ -131,7 +145,7 @@ async def analyze_evidence_chain(
             "contradictions": [],
             "missing_evidence": [],
             "suggested_order": [],
-            "summary": f"证据链分析结果解析失败。{raw_text}" if raw_text else "证据链分析服务暂时不可用。",
+            "summary": "证据链分析结果解析失败，请稍后重试。",
         }
     except Exception as e:
         logger.warning(f"Evidence chain analysis failed: {e}")
@@ -142,7 +156,7 @@ async def analyze_evidence_chain(
             "contradictions": [],
             "missing_evidence": [],
             "suggested_order": [],
-            "summary": f"证据链分析失败: {e}",
+            "summary": "证据链分析服务暂时不可用，请稍后重试。",
         }
 
     # Build readable report
@@ -165,6 +179,16 @@ async def generate_cross_examination(
     # Guard: empty evidence text.
     if not evidence_text or not evidence_text.strip():
         return "无法生成质证意见：证据内容为空"
+
+    # Guard: evidence text too long.
+    if len(evidence_text) > _MAX_EVIDENCE_TEXT_LENGTH:
+        logger.warning("Evidence text truncated for cross-examination: %d > %d", len(evidence_text), _MAX_EVIDENCE_TEXT_LENGTH)
+        evidence_text = evidence_text[:_MAX_EVIDENCE_TEXT_LENGTH]
+
+    # Guard: validate evidence_type.
+    valid_types = {"书证", "物证", "视听资料", "电子数据", "证人证言", "当事人陈述", "鉴定意见", "勘验笔录", "其他"}
+    if not evidence_type or not evidence_type.strip():
+        evidence_type = "其他"
 
     settings = get_settings()
     client = create_llm_client_from_settings(settings)

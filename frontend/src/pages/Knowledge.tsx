@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BookOpen, Plus, Trash2, Loader2, Tag, Search, FileText, X, Upload, AlertCircle, Eye, CheckSquare, Square, BarChart3, Clock, Download, Layers } from 'lucide-react';
 import { knowledgeApi, type KnowledgeItem, type KnowledgeStats } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
-export default function Knowledge() {
+function Knowledge() {
   const { toast } = useToast();
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [stats, setStats] = useState<KnowledgeStats>({ total: 0, tags: [] });
@@ -16,6 +16,10 @@ export default function Knowledge() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
+
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const KNOWLEDGE_PAGE_SIZE = 15;
 
   // Bulk operations state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -32,7 +36,7 @@ export default function Knowledge() {
 
   const [form, setForm] = useState({ title: '', content: '', source: '', tags: '' });
 
-  useEffect(() => { loadData(); }, [filterTag]);
+  useEffect(() => { loadData(); setPage(1); }, [filterTag]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -183,23 +187,14 @@ export default function Knowledge() {
   };
 
   /** Toggle selection of an item */
-  const toggleSelect = (id: number) => {
+  const toggleSelect = useCallback((id: number) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
-
-  /** Select/deselect all visible items */
-  const toggleSelectAll = () => {
-    if (selectedIds.size === filtered.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filtered.map(i => i.id)));
-    }
-  };
+  }, []);
 
   /** Export knowledge list */
   const handleExportKnowledge = () => {
@@ -242,21 +237,40 @@ export default function Knowledge() {
       .slice(0, 5);
   };
 
-  const filtered = searchQuery
+  const filtered = useMemo(() => searchQuery
     ? items.filter(it =>
         it.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         it.content.toLowerCase().includes(searchQuery.toLowerCase()))
-    : items;
+    : items, [items, searchQuery]);
+
+  // Paginate filtered results
+  const totalPages = Math.max(1, Math.ceil(filtered.length / KNOWLEDGE_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedFiltered = useMemo(
+    () => filtered.slice((safePage - 1) * KNOWLEDGE_PAGE_SIZE, safePage * KNOWLEDGE_PAGE_SIZE),
+    [filtered, safePage, KNOWLEDGE_PAGE_SIZE],
+  );
+
+  /** Select/deselect all visible items */
+  const toggleSelectAll = useCallback(() => {
+    if (selectedIds.size === pagedFiltered.length && pagedFiltered.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(pagedFiltered.map(i => i.id)));
+    }
+  }, [selectedIds.size, pagedFiltered]);
 
   /** Statistics by tag for visualization */
-  const tagCounts: Record<string, number> = {};
-  items.forEach(item => {
-    (item.tags || []).forEach(tag => {
-      tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+  const { sortedTags, maxTagCount } = useMemo(() => {
+    const tagCounts: Record<string, number> = {};
+    items.forEach(item => {
+      (item.tags || []).forEach(tag => {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      });
     });
-  });
-  const sortedTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]);
-  const maxTagCount = sortedTags.length > 0 ? sortedTags[0][1] : 1;
+    const sorted = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]);
+    return { sortedTags: sorted, maxTagCount: sorted.length > 0 ? sorted[0][1] : 1 };
+  }, [items]);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -408,8 +422,8 @@ export default function Knowledge() {
       {bulkMode && (
         <div className="rounded-lg border bg-muted/30 p-3 flex flex-wrap items-center gap-3">
           <button onClick={toggleSelectAll} className="flex items-center gap-1.5 text-xs">
-            {selectedIds.size === filtered.length && filtered.length > 0 ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
-            {selectedIds.size === filtered.length ? '取消全选' : '全选'}
+            {selectedIds.size === pagedFiltered.length && pagedFiltered.length > 0 ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
+            {selectedIds.size === pagedFiltered.length && pagedFiltered.length > 0 ? '取消全选' : '全选'}
           </button>
           <span className="text-xs text-muted-foreground">已选 {selectedIds.size} 项</span>
           {selectedIds.size > 0 && (
@@ -441,7 +455,7 @@ export default function Knowledge() {
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(item => (
+          {pagedFiltered.map(item => (
             <div key={item.id} className="rounded-lg border bg-card">
               <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-accent/50"
                 onClick={() => !bulkMode && setExpandedId(expandedId === item.id ? null : item.id)}>
@@ -519,6 +533,50 @@ export default function Knowledge() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-2">
+          <p className="text-xs text-muted-foreground">
+            第 {safePage} / {totalPages} 页，共 {filtered.length} 条
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="rounded-md border p-2 transition-colors hover:bg-accent disabled:opacity-40"
+            >
+              &#8249;
+            </button>
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
+              .map((p, idx, arr) => (
+                <span key={p} className="flex items-center">
+                  {idx > 0 && arr[idx - 1] !== p - 1 && (
+                    <span className="px-1 text-xs text-muted-foreground">...</span>
+                  )}
+                  <button
+                    onClick={() => setPage(p)}
+                    className={`min-w-[32px] rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
+                      p === safePage
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'hover:bg-accent'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                </span>
+              ))}
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              className="rounded-md border p-2 transition-colors hover:bg-accent disabled:opacity-40"
+            >
+              &#8250;
+            </button>
+          </div>
         </div>
       )}
 
@@ -645,3 +703,5 @@ export default function Knowledge() {
     </div>
   );
 }
+
+export default React.memo(Knowledge);

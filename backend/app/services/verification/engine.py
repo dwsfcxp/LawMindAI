@@ -6,6 +6,12 @@
 3. 北大法宝 MCP — 专业法律数据库
 4. 本地向量库 — 本地法律法规
 5. 网络搜索 — 补充验证
+
+支持验证类型：
+- 法律（全国人大制定）
+- 行政法规（国务院制定）
+- 司法解释（最高法/最高检制定）
+- 部门规章（各部委制定）
 """
 
 import re
@@ -18,6 +24,153 @@ from app.services.llm_client import create_llm_client_from_settings
 from app.schemas.verification import LawVerifyRequest, LawVerifyResult, LawVerifyResponse
 
 logger = logging.getLogger(__name__)
+
+# ── 法律简称 -> 全称映射 ────────────────────────────────────────────────────
+LAW_NAME_ALIASES: dict[str, str] = {
+    # 民法商法
+    "民法典": "中华人民共和国民法典",
+    "民法通则": "中华人民共和国民法通则",
+    "民法总则": "中华人民共和国民法总则",
+    "合同法": "中华人民共和国合同法",
+    "物权法": "中华人民共和国物权法",
+    "侵权责任法": "中华人民共和国侵权责任法",
+    "担保法": "中华人民共和国担保法",
+    "公司法": "中华人民共和国公司法",
+    "证券法": "中华人民共和国证券法",
+    "票据法": "中华人民共和国票据法",
+    "保险法": "中华人民共和国保险法",
+    "企业破产法": "中华人民共和国企业破产法",
+    "商标法": "中华人民共和国商标法",
+    "专利法": "中华人民共和国专利法",
+    "著作权法": "中华人民共和国著作权法",
+    "消费者权益保护法": "中华人民共和国消费者权益保护法",
+    "反不正当竞争法": "中华人民共和国反不正当竞争法",
+    "反垄断法": "中华人民共和国反垄断法",
+    "海商法": "中华人民共和国海商法",
+    "信托法": "中华人民共和国信托法",
+    # 刑法
+    "刑法": "中华人民共和国刑法",
+    "刑法修正案（八）": "中华人民共和国刑法修正案（八）",
+    "刑法修正案（九）": "中华人民共和国刑法修正案（九）",
+    "刑法修正案（十一）": "中华人民共和国刑法修正案（十一）",
+    "刑法修正案（十二）": "中华人民共和国刑法修正案（十二）",
+    # 行政法
+    "行政许可法": "中华人民共和国行政许可法",
+    "行政处罚法": "中华人民共和国行政处罚法",
+    "行政强制法": "中华人民共和国行政强制法",
+    "行政复议法": "中华人民共和国行政复议法",
+    "行政诉讼法": "中华人民共和国行政诉讼法",
+    "国家赔偿法": "中华人民共和国国家赔偿法",
+    "治安管理处罚法": "中华人民共和国治安管理处罚法",
+    "道路交通安全法": "中华人民共和国道路交通安全法",
+    # 劳动法
+    "劳动法": "中华人民共和国劳动法",
+    "劳动合同法": "中华人民共和国劳动合同法",
+    "劳动争议调解仲裁法": "中华人民共和国劳动争议调解仲裁法",
+    "社会保险法": "中华人民共和国社会保险法",
+    "就业促进法": "中华人民共和国就业促进法",
+    # 民事诉讼法
+    "民事诉讼法": "中华人民共和国民事诉讼法",
+    "仲裁法": "中华人民共和国仲裁法",
+    "刑事诉讼法": "中华人民共和国刑事诉讼法",
+    # 其他
+    "宪法": "中华人民共和国宪法",
+    "立法法": "中华人民共和国立法法",
+    "环境保护法": "中华人民共和国环境保护法",
+    "个人信息保护法": "中华人民共和国个人信息保护法",
+    "数据安全法": "中华人民共和国数据安全法",
+    "网络安全法": "中华人民共和国网络安全法",
+    "外商投资法": "中华人民共和国外商投资法",
+    "土地管理法": "中华人民共和国土地管理法",
+    "城市房地产管理法": "中华人民共和国城市房地产管理法",
+    "建筑法": "中华人民共和国建筑法",
+    "招标投标法": "中华人民共和国招标投标法",
+    "政府采购法": "中华人民共和国政府采购法",
+    "税收征收管理法": "中华人民共和国税收征收管理法",
+    "企业所得税法": "中华人民共和国企业所得税法",
+    "个人所得税法": "中华人民共和国个人所得税法",
+    "知识产权法": "中华人民共和国知识产权法",
+    "食品安全法": "中华人民共和国食品安全法",
+    "药品管理法": "中华人民共和国药品管理法",
+    "教育法": "中华人民共和国教育法",
+    "义务教育法": "中华人民共和国义务教育法",
+    "婚姻法": "中华人民共和国婚姻法",
+    "继承法": "中华人民共和国继承法",
+    "收养法": "中华人民共和国收养法",
+    # 司法解释常见简称
+    "民间借贷司法解释": "最高人民法院关于审理民间借贷案件适用法律若干问题的规定",
+    "合同法司法解释一": "最高人民法院关于适用《中华人民共和国合同法》若干问题的解释（一）",
+    "合同法司法解释二": "最高人民法院关于适用《中华人民共和国合同法》若干问题的解释（二）",
+    "公司法司法解释三": "最高人民法院关于适用《中华人民共和国公司法》若干问题的规定（三）",
+    "公司法司法解释四": "最高人民法院关于适用《中华人民共和国公司法》若干问题的规定（四）",
+    "人身损害赔偿司法解释": "最高人民法院关于审理人身损害赔偿案件适用法律若干问题的解释",
+    "劳动争议司法解释": "最高人民法院关于审理劳动争议案件适用法律问题的解释",
+    "民事诉讼证据规定": "最高人民法院关于民事诉讼证据的若干规定",
+    # 行政法规常见简称
+    "劳动合同法实施条例": "中华人民共和国劳动合同法实施条例",
+    "物权法司法解释": "最高人民法院关于适用《中华人民共和国物权法》若干问题的解释",
+}
+
+# 司法解释标识模式（用于识别司法解释类引用）
+_JUDICIAL_INTERPRETATION_MARKERS = [
+    "最高人民法院关于",
+    "最高法关于",
+    "最高人民检察院关于",
+    "最高检关于",
+    "法释〔",
+    "法释[",
+    "高检发释字",
+]
+
+# 行政法规标识模式
+_ADMIN_REGULATION_MARKERS = [
+    "条例",
+    "规定",
+    "办法",
+    "实施细则",
+    "实施条例",
+]
+
+
+def _resolve_law_name(name: str) -> str:
+    """Resolve a law short name to its full name.
+
+    Tries exact match first, then substring match.
+    Returns the original name if no alias is found.
+    """
+    # Exact match
+    if name in LAW_NAME_ALIASES:
+        return LAW_NAME_ALIASES[name]
+    # Try stripping common prefixes
+    for prefix in ("《", "中华人民共和国", "中国"):
+        stripped = name.replace(prefix, "")
+        if stripped in LAW_NAME_ALIASES:
+            return LAW_NAME_ALIASES[stripped]
+    # Try substring match (e.g., "合同法" within "中华人民共和国合同法")
+    for short, full in LAW_NAME_ALIASES.items():
+        if short in name or name in full:
+            return full
+    return name
+
+
+def _classify_citation_type(name: str) -> str:
+    """Classify the type of a legal citation based on its name.
+
+    Returns one of: "law", "judicial_interpretation", "admin_regulation", "other"
+    """
+    for marker in _JUDICIAL_INTERPRETATION_MARKERS:
+        if marker in name:
+            return "judicial_interpretation"
+    if name.startswith("中华人民共和国") and any(
+        name.endswith(suffix) for suffix in ("法", "决定", "修正案")
+    ):
+        return "law"
+    for marker in _ADMIN_REGULATION_MARKERS:
+        if name.endswith(marker) or marker in name:
+            # Check it's not actually a law
+            if not name.endswith("法"):
+                return "admin_regulation"
+    return "other"
 
 
 class LawVerificationEngine:
@@ -53,23 +206,30 @@ class LawVerificationEngine:
                 recommendation="所有验证源均无法访问，请稍后重试或人工核实。",
             )
 
-        # 综合判断
+        # 综合判断 — 使用加权置信度算法
+        confidence = self._compute_confidence(verify_results)
         consistent_sources = sum(1 for r in verify_results if r.found and r.is_consistent)
         found_sources = sum(1 for r in verify_results if r.found)
-        total_sources = len(verify_results)
 
         overall_consistent = consistent_sources >= 1 and found_sources > 0
-        confidence = consistent_sources / max(found_sources, 1) if found_sources > 0 else 0.0
 
         recommendation = ""
+        citation_type = _classify_citation_type(req.law_name)
+        type_label = {
+            "law": "法律",
+            "judicial_interpretation": "司法解释",
+            "admin_regulation": "行政法规",
+            "other": "规范性文件",
+        }.get(citation_type, "法条")
+
         if overall_consistent and confidence >= 0.8:
-            recommendation = "法条引用准确，内容与权威来源一致。"
+            recommendation = f"{type_label}引用准确，内容与权威来源一致。"
         elif overall_consistent and confidence >= 0.5:
-            recommendation = "法条引用基本正确，但部分来源存在差异，建议人工复核。"
+            recommendation = f"{type_label}引用基本正确，但部分来源存在差异，建议人工复核。"
         elif found_sources == 0:
-            recommendation = "未能从任何权威来源找到该法条，请核实法条名称和编号是否正确。"
+            recommendation = f"未能从任何权威来源找到该{type_label}，请核实名称和编号是否正确。"
         else:
-            recommendation = "法条内容与权威来源不一致，请修正后重新核查。"
+            recommendation = f"{type_label}内容与权威来源不一致，请修正后重新核查。"
 
         return LawVerifyResponse(
             law_name=req.law_name,
@@ -80,6 +240,40 @@ class LawVerificationEngine:
             confidence=round(confidence, 2),
             recommendation=recommendation,
         )
+
+    def _compute_confidence(self, results: list[LawVerifyResult]) -> float:
+        """Compute weighted confidence score based on verification results.
+
+        Weights sources by authority:
+        - NPC gov / gov.cn: 1.0 (highest authority)
+        - Beida Fabao: 0.8
+        - Local vector: 0.6
+        - AI knowledge: 0.4
+
+        Confidence = weighted_consistent / weighted_found
+        """
+        source_weights = {
+            "全国人大法律法规库": 1.0,
+            "中央政府规章库": 1.0,
+            "北大法宝": 0.8,
+            "本地法条向量库": 0.6,
+            "AI知识验证": 0.4,
+        }
+
+        weighted_consistent = 0.0
+        weighted_found = 0.0
+
+        for r in results:
+            weight = source_weights.get(r.source, 0.3)
+            if r.found:
+                weighted_found += weight
+                if r.is_consistent:
+                    weighted_consistent += weight
+
+        if weighted_found == 0:
+            return 0.0
+
+        return weighted_consistent / weighted_found
 
     async def verify_document(self, content: str) -> list[LawVerifyResponse]:
         """从文书内容中自动提取法条引用并批量核查"""
@@ -104,24 +298,60 @@ class LawVerificationEngine:
     def _extract_citations(self, text: str) -> list[tuple[str, str, str]]:
         """从文本中提取法条引用。返回 (法律名, 条款号, 周围上下文)
 
-        Supports formats like:
+        Supported formats:
         - 《XXX法》第X条
         - 《XXX法》第X条第X款
         - 《XXX法》第X条第X款第X项
+        - 《XXX法》第X章第X条
+        - 《XXX法》第X编第X章第X条
+        - 第X条（without book name, using surrounding context）
+        - 司法解释中 "第X条" 的引用
+        - 行政法规引用
         """
         citations = []
-        # Extended pattern: supports 条/款/项 combinations
-        # 条款号部分的数字可以是中文数字或阿拉伯数字
-        cn_num = r'[一二三四五六七八九十百千万零\d]+'
-        article_pattern = rf'第{cn_num}条(?:第{cn_num}款(?:第{cn_num}项)?)?'
-        pattern = rf'《([^》]+)》\s*({article_pattern})'
+        seen: set[tuple[str, str]] = set()
+
+        # Chinese numeral pattern (supports 一至九十九, 百, 千 etc.)
+        cn_num = r'[一二三四五六七八九十百千万零〇\d]+'
+
+        # Article patterns: 条 (with optional 款 and 项)
+        article_clause_item = rf'第{cn_num}条(?:\s*第{cn_num}款(?:\s*第{cn_num}项)?)?'
+
+        # Chapter + article pattern
+        chapter_article = rf'(?:第{cn_num}[编章节]\s*)?{article_clause_item}'
+
+        # Main pattern: 《法律名》条款号
+        pattern = rf'《([^》]+)》\s*({chapter_article})'
         for match in re.finditer(pattern, text):
             law_name = match.group(1)
             article = match.group(2)
-            start = max(0, match.start() - 100)
-            end = min(len(text), match.end() + 200)
-            context = text[start:end]
-            citations.append((law_name, article, context))
+            key = (law_name, article)
+            if key not in seen:
+                seen.add(key)
+                start = max(0, match.start() - 100)
+                end = min(len(text), match.end() + 200)
+                context = text[start:end]
+                # Resolve short names to full names
+                resolved = _resolve_law_name(law_name)
+                citations.append((resolved, article, context))
+
+        # Also extract bare article references like "依照第X条之规定" when preceded
+        # by a law name mention within the same paragraph
+        law_mentions = list(re.finditer(r'《([^》]+)》', text))
+        for mention in law_mentions:
+            law_name = mention.group(1)
+            resolved = _resolve_law_name(law_name)
+            # Look for bare article references in the surrounding context
+            context_start = max(0, mention.start() - 50)
+            context_end = min(len(text), mention.end() + 500)
+            context_window = text[context_start:context_end]
+            for art_match in re.finditer(rf'({article_clause_item})', context_window):
+                article = art_match.group(1)
+                key = (resolved, article)
+                if key not in seen:
+                    seen.add(key)
+                    citations.append((resolved, article, context_window))
+
         return citations
 
     # ── 验证来源实现 ─────────────────────────────────────────────────
@@ -157,14 +387,14 @@ class LawVerificationEngine:
                     )
         except Exception as e:
             logger.debug(f"NPC gov verification failed: {e}")
-            error_msg = str(e)[:100]
+            error_msg = "连接超时，请稍后重试"
 
         return LawVerifyResult(
             source="全国人大法律法规库",
             found=False,
             matched_content="",
             is_consistent=False,
-            notes=f"无法访问flk.npc.gov.cn: {error_msg}",
+            notes=f"无法访问全国人大法律法规库: {error_msg}",
         )
 
     async def _verify_gov_cn(self, req: LawVerifyRequest) -> LawVerifyResult:
@@ -297,7 +527,7 @@ class LawVerificationEngine:
                 found=False,
                 matched_content="",
                 is_consistent=False,
-                notes=f"AI验证失败: {str(e)[:100]}",
+                notes="AI验证暂时不可用，请稍后重试",
             )
 
     def _compare_content(self, original: str, found: str) -> bool:

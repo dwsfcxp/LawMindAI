@@ -23,6 +23,13 @@ class LawVerifyRequest(BaseModel):
             raise ValueError("条款号不能为空")
         return v.strip()
 
+    @field_validator("content")
+    @classmethod
+    def content_length_limit(cls, v):
+        if v and len(v) > 10000:
+            raise ValueError("法条内容不能超过10000字")
+        return v
+
 
 class LawVerifyResult(BaseModel):
     """单条核查结果"""

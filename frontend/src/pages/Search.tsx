@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import { Search as SearchIcon, Scale, BookOpen, FileText, Loader2, Clock, Copy, Check, Trash2, BookmarkPlus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { searchApi } from '@/lib/api';
 import type { SearchResults } from '@/lib/api';
@@ -21,7 +21,7 @@ const sourceBadge: Record<string, { label: string; color: string }> = {
 
 const HISTORY_KEY = 'lawmind_search_history';
 const SAVED_KEY = 'lawmind_saved_results';
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 20;
 const PAGE_SIZE = 5;
 
 function getSearchHistory(): string[] {
@@ -133,7 +133,7 @@ function RelevanceBar({ score }: { score: number }) {
   );
 }
 
-export default function Search() {
+function Search() {
   const [query, setQuery] = useState('');
   const [source, setSource] = useState<SearchSource>('all');
   const [searchData, setSearchData] = useState<SearchResults | null>(null);
@@ -148,8 +148,13 @@ export default function Search() {
   const [showSaved, setShowSaved] = useState(false);
   const [savedResults, setSavedResults] = useState<SavedResult[]>(getSavedResults);
 
+  // Request cancellation ref
+  const abortRef = useRef<AbortController | null>(null);
+  // Debounce timer ref
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Combine laws and cases into a flat result list, applying source filter
-  const allResults = searchData
+  const allResults = useMemo(() => searchData
     ? [
         ...(searchData.laws || []).map((item: any) => ({ ...item, source: 'law' })),
         ...(searchData.cases || []).map((item: any) => ({ ...item, source: 'case' })),
@@ -164,7 +169,7 @@ export default function Search() {
           relevance: computeRelevance(item, query),
         }))
         .sort((a, b) => b.relevance - a.relevance)
-    : [];
+    : [], [searchData, source, query]);
 
   const totalPages = Math.ceil(allResults.length / PAGE_SIZE);
   const paginatedResults = allResults.slice(
@@ -175,6 +180,12 @@ export default function Search() {
   const handleSearch = useCallback(async (searchQuery?: string) => {
     const q = searchQuery || query;
     if (!q.trim()) return;
+
+    // Cancel any in-flight search
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    abortRef.current = new AbortController();
 
     if (searchQuery) setQuery(searchQuery);
     setLoading(true);
@@ -189,16 +200,31 @@ export default function Search() {
         result_type: source === 'all' ? undefined : source,
         top_k: 20,
       });
+      // Only update if this request wasn't superseded
+      if (abortRef.current?.signal.aborted) return;
       setSearchData(data);
       addToHistory(q.trim());
       setHistory(getSearchHistory());
     } catch {
+      if (abortRef.current?.signal.aborted) return;
       setSearchData(null);
       setError('搜索失败，请重试');
     } finally {
-      setLoading(false);
+      if (!abortRef.current?.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [query, source]);
+
+  // Debounced search triggered on query change
+  const handleDebouncedSearch = useCallback((value: string) => {
+    setQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!value.trim()) return;
+    debounceRef.current = setTimeout(() => {
+      handleSearch(value);
+    }, 400);
+  }, [handleSearch]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
@@ -310,7 +336,7 @@ export default function Search() {
             <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => handleDebouncedSearch(e.target.value)}
               onKeyDown={handleKeyDown}
               onFocus={() => { if (!searched && history.length > 0) setShowHistory(true); }}
               onBlur={() => { setTimeout(() => setShowHistory(false), 200); }}
@@ -578,3 +604,5 @@ export default function Search() {
     </div>
   );
 }
+
+export default React.memo(Search);

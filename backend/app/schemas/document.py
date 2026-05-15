@@ -97,6 +97,8 @@ class DocumentGenerate(BaseModel):
     def case_facts_must_not_be_empty(cls, v):
         if not v or not v.strip():
             raise ValueError("案件事实不能为空")
+        if len(v.strip()) > 50000:
+            raise ValueError("案件事实不能超过50000字")
         return v.strip()
 
 
@@ -145,6 +147,14 @@ class DocumentOut(BaseModel):
 
 class DocumentExport(BaseModel):
     format: str = "docx"  # docx / markdown / html / pdf
+
+    @field_validator("format")
+    @classmethod
+    def format_must_be_valid(cls, v):
+        allowed = {"docx", "markdown", "html", "pdf"}
+        if v not in allowed:
+            raise ValueError(f"不支持的导出格式: {v}，允许: {', '.join(sorted(allowed))}")
+        return v
 
     model_config = {
         "json_schema_extra": {

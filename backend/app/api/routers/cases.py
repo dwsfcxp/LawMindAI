@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, func, or_, and_, false as sa_false
@@ -13,6 +14,11 @@ from app.schemas.case import CaseCreate, CaseUpdate, CaseOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+ALLOWED_CASE_TYPES = {
+    "civil_litigation", "criminal_defense", "non_litigation", "administrative_labor",
+}
+MAX_DESCRIPTION_LENGTH = 50000
 
 
 def _case_to_out(case: Case, doc_count: int = 0) -> dict:
@@ -46,6 +52,7 @@ async def list_cases(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    limit = min(max(limit, 1), 100)
     doc_count_sq = (
         select(func.count(Document.id))
         .where(Document.case_id == Case.id)
@@ -98,6 +105,20 @@ async def create_case(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if data.case_type not in ALLOWED_CASE_TYPES:
+        raise HTTPException(400, f"无效的案件类型，允许值: {', '.join(sorted(ALLOWED_CASE_TYPES))}")
+
+    if data.filing_date:
+        try:
+            filing = datetime.strptime(data.filing_date, "%Y-%m-%d").date()
+            if filing > date.today():
+                raise HTTPException(400, "立案日期不能是未来日期")
+        except ValueError:
+            raise HTTPException(400, "立案日期格式无效，请使用 YYYY-MM-DD 格式")
+
+    if data.description and len(data.description) > MAX_DESCRIPTION_LENGTH:
+        raise HTTPException(400, f"案件描述不能超过 {MAX_DESCRIPTION_LENGTH} 个字符")
+
     try:
         case = Case(
             **data.model_dump(),

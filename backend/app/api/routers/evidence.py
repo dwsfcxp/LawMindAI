@@ -23,6 +23,10 @@ from app.services.evidence.chain import analyze_evidence_chain, generate_cross_e
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+ALLOWED_EVIDENCE_TYPES = {
+    "documentary", "physical", "electronic", "testimony", "audio_visual", "expert",
+}
+
 
 @router.get("", response_model=list[EvidenceOut])
 async def list_evidence(
@@ -32,6 +36,7 @@ async def list_evidence(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(max(limit, 1), 100)
     try:
         base_where = Case.owner_id == current_user.id
         # Count query
@@ -60,7 +65,7 @@ async def list_evidence(
             headers={"X-Total-Count": str(total)},
         )
     except Exception as e:
-        logger.error(f"List evidence failed: {e}")
+        logger.error("List evidence failed: %s", e)
         raise HTTPException(500, "查询证据列表失败")
 
 
@@ -71,6 +76,8 @@ async def create_evidence(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        if data.type not in ALLOWED_EVIDENCE_TYPES:
+            raise HTTPException(400, f"无效的证据类型，允许值: {', '.join(sorted(ALLOWED_EVIDENCE_TYPES))}")
         # 验证案件归属
         case = await db.execute(select(Case).where(Case.id == data.case_id, Case.owner_id == current_user.id))
         if not case.scalar_one_or_none():
@@ -90,7 +97,7 @@ async def create_evidence(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Create evidence failed: {e}")
+        logger.error("Create evidence failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "创建证据失败")
 
@@ -133,7 +140,7 @@ async def upload_file(
             await db.commit()
             await db.refresh(row)
         except Exception as e:
-            logger.warning(f"Auto OCR failed for evidence {evidence_id}: {e}")
+            logger.warning("Auto OCR failed for evidence %d: %s", evidence_id, e)
 
         out = EvidenceOut.model_validate(row)
         out.has_file = True
@@ -141,7 +148,7 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Upload evidence file failed: {e}")
+        logger.error("Upload evidence file failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "上传证据文件失败")
 
@@ -187,7 +194,7 @@ async def update_evidence(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update evidence failed: {e}")
+        logger.error("Update evidence failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "更新证据失败")
 
@@ -216,7 +223,7 @@ async def delete_evidence(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete evidence failed: {e}")
+        logger.error("Delete evidence failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除证据失败")
 
@@ -252,7 +259,7 @@ async def analyze_evidence_endpoint(
         import time
         start = time.time()
         row.analysis = await analyze_evidence(row.ocr_text or "", case_context)
-        logger.info(f"Evidence analysis took {time.time()-start:.2f}s for evidence {evidence_id}")
+        logger.info("Evidence analysis took %.2fs for evidence %d", time.time() - start, evidence_id)
         await db.commit()
         await db.refresh(row)
 
@@ -262,8 +269,8 @@ async def analyze_evidence_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Analyze evidence failed: {e}")
-        raise HTTPException(500, f"证据分析失败: {str(e)[:200]}")
+        logger.error("Analyze evidence failed: %s", e)
+        raise HTTPException(500, "证据分析失败，请稍后重试")
 
 
 @router.get("/{evidence_id}/download")
@@ -326,8 +333,8 @@ async def chain_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chain analysis failed: {e}")
-        raise HTTPException(500, f"证据链分析失败: {str(e)[:200]}")
+        logger.error("Chain analysis failed: %s", e)
+        raise HTTPException(500, "证据链分析失败，请稍后重试")
 
 
 @router.post("/{evidence_id}/cross-examination")
@@ -361,5 +368,5 @@ async def cross_examination(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Cross examination failed: {e}")
-        raise HTTPException(500, f"质证意见生成失败: {str(e)[:200]}")
+        logger.error("Cross examination failed: %s", e)
+        raise HTTPException(500, "质证意见生成失败，请稍后重试")

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Upload, FileText, Trash2, Download, Loader2, Sparkles, ChevronDown, ChevronRight, Link2, MessageSquare, AlertCircle, X, Plus, Image, Mic, Volume2, Scale, Camera, Monitor, FileSpreadsheet, Clock, Eye } from 'lucide-react';
 import { caseApi, evidenceApi, evidenceChainApi, type Case as CaseType, type EvidenceItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
@@ -211,6 +211,24 @@ export default function Evidence() {
 
   const [form, setForm] = useState({ case_id: 0, type: 'documentary', title: '', tags: '' });
 
+  // Confirmation dialog state (replaces browser confirm())
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
+
+  // Memoized evidence filtering: sorted by date for timeline view
+  const sortedByDate = useMemo(() =>
+    [...evidenceList].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [evidenceList]
+  );
+
+  // Memoized evidence type summary counts
+  const evidenceTypeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const ev of evidenceList) {
+      counts[ev.type] = (counts[ev.type] || 0) + 1;
+    }
+    return counts;
+  }, [evidenceList]);
+
   useEffect(() => {
     caseApi.list().then(setCases).catch(e => setError('加载案件列表失败')).finally(() => setCasesLoading(false));
   }, []);
@@ -229,7 +247,7 @@ export default function Evidence() {
     return () => document.removeEventListener('keydown', handler);
   }, [showCreate]);
 
-  const loadEvidence = async () => {
+  const loadEvidence = useCallback(async () => {
     if (!selectedCase) return;
     setLoading(true);
     try {
@@ -238,9 +256,9 @@ export default function Evidence() {
     } catch {
       setError('加载证据列表失败');
     } finally { setLoading(false); }
-  };
+  }, [selectedCase]);
 
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     try {
       await evidenceApi.create({ ...form, case_id: selectedCase!, tags: form.tags ? form.tags.split(',').map(t => t.trim()) : undefined });
       setShowCreate(false);
@@ -251,14 +269,14 @@ export default function Evidence() {
       setError('创建失败');
       toast({ type: 'error', title: '创建失败' });
     }
-  };
+  }, [form, selectedCase, loadEvidence, toast]);
 
-  const handleUpload = async (evidenceId: number) => {
+  const handleUpload = useCallback(async (evidenceId: number) => {
     fileInputRef.current?.click();
     setUploadTarget(evidenceId);
-  };
+  }, []);
 
-  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !uploadTarget) return;
     setUploading(uploadTarget);
@@ -272,7 +290,7 @@ export default function Evidence() {
       toast({ type: 'error', title: '上传失败' });
     }
     finally { setUploading(null); setUploadTarget(null); if (fileInputRef.current) fileInputRef.current.value = ''; }
-  };
+  }, [uploadTarget, loadEvidence, toast]);
 
   /** Handle drag-and-drop file onto a specific evidence item */
   const handleDropOnEvidence = useCallback(async (evidenceId: number, file: File) => {
@@ -311,7 +329,7 @@ export default function Evidence() {
     handleDropOnEvidence(uploadTarget, file);
   }, [uploadTarget, handleDropOnEvidence]);
 
-  const handleAnalyze = async (id: number) => {
+  const handleAnalyze = useCallback(async (id: number) => {
     setAnalyzing(id);
     try {
       await evidenceApi.analyze(id);
@@ -322,21 +340,23 @@ export default function Evidence() {
       toast({ type: 'error', title: 'AI分析失败' });
     }
     finally { setAnalyzing(null); }
-  };
+  }, [loadEvidence, toast]);
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('确定删除此证据？')) return;
-    try {
-      await evidenceApi.delete(id);
-      loadEvidence();
-      toast({ type: 'success', title: '证据已删除' });
-    } catch (e) {
-      setError('删除失败');
-      toast({ type: 'error', title: '删除失败' });
-    }
-  };
+  const handleDelete = useCallback((id: number) => {
+    setConfirmDialog({ message: '确定删除此证据？', onConfirm: async () => {
+      try {
+        await evidenceApi.delete(id);
+        loadEvidence();
+        toast({ type: 'success', title: '证据已删除' });
+      } catch (e) {
+        setError('删除失败');
+        toast({ type: 'error', title: '删除失败' });
+      }
+      setConfirmDialog(null);
+    }});
+  }, [loadEvidence, toast]);
 
-  const handleChainAnalysis = async () => {
+  const handleChainAnalysis = useCallback(async () => {
     if (!selectedCase) return;
     setAnalyzingChain(true);
     setChainResult(null);
@@ -349,9 +369,9 @@ export default function Evidence() {
       setError(msg);
       toast({ type: 'error', title: '证据链分析失败', description: msg });
     } finally { setAnalyzingChain(false); }
-  };
+  }, [selectedCase, toast]);
 
-  const handleCrossExamination = async (id: number) => {
+  const handleCrossExamination = useCallback(async (id: number) => {
     setCrossExamId(id);
     try {
       const result = await evidenceChainApi.crossExamination(id);
@@ -362,10 +382,10 @@ export default function Evidence() {
       setError(msg);
       toast({ type: 'error', title: '质证意见生成失败' });
     } finally { setCrossExamId(null); }
-  };
+  }, [toast]);
 
   /** Export evidence list as CSV */
-  const handleExportEvidenceList = () => {
+  const handleExportEvidenceList = useCallback(() => {
     if (evidenceList.length === 0) return;
     const headers = ['编号', '名称', '类型', '标签', '已上传文件', '创建日期'];
     const rows = evidenceList.map((ev, i) => [
@@ -388,10 +408,7 @@ export default function Evidence() {
     a.remove();
     URL.revokeObjectURL(url);
     toast({ type: 'success', title: '证据清单已导出' });
-  };
-
-  /** Sorted evidence by date for timeline view */
-  const sortedByDate = [...evidenceList].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }, [evidenceList, toast]);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 px-4 sm:px-0">
@@ -721,6 +738,19 @@ export default function Evidence() {
             <div className="mt-6 flex justify-end gap-3">
               <button onClick={() => setShowCreate(false)} className="rounded-md border px-4 py-2 text-sm hover:bg-accent">取消</button>
               <button onClick={handleCreate} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">创建</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Dialog (replaces browser confirm()) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmDialog(null)} role="dialog" aria-modal="true">
+          <div className="bg-card rounded-xl shadow-lg p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-medium mb-4">{confirmDialog.message}</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDialog(null)} className="px-4 py-2 rounded-lg border text-sm hover:bg-accent">取消</button>
+              <button onClick={() => confirmDialog.onConfirm()} className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90">确定</button>
             </div>
           </div>
         </div>

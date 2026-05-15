@@ -19,6 +19,8 @@ class CaseCreate(BaseModel):
     def title_must_not_be_empty(cls, v):
         if not v or not v.strip():
             raise ValueError("案件标题不能为空")
+        if len(v.strip()) > 200:
+            raise ValueError("案件标题不能超过200字")
         return v.strip()
 
     @field_validator("case_type")
@@ -27,6 +29,13 @@ class CaseCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError("案件类型不能为空")
         return v.strip()
+
+    @field_validator("description")
+    @classmethod
+    def description_length_limit(cls, v):
+        if v and len(v) > 50000:
+            raise ValueError("案件描述不能超过50000字")
+        return v
 
 
 class CaseUpdate(BaseModel):

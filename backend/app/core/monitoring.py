@@ -9,6 +9,7 @@ Provides:
 
 import functools
 import logging
+import threading
 import time
 import tracemalloc
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ SLOW_QUERY_THRESHOLD_MS = 1000  # Log warning if query takes > 1 second
 @dataclass
 class TimingRecord:
     """A single timing measurement."""
+    __slots__ = ("name", "elapsed_ms", "timestamp", "metadata")
+
     name: str
     elapsed_ms: float
     timestamp: float
@@ -37,29 +40,40 @@ class TimingRecord:
 
 
 class TimingStore:
-    """Thread-safe in-memory store for timing records (capped at last N)."""
+    """Thread-safe in-memory store for timing records (capped at last N).
+
+    Uses a threading lock to ensure safe concurrent access and LRU eviction
+    to drop the oldest record when max_records is reached.
+    """
 
     def __init__(self, max_records: int = 1000):
         self._records: list[TimingRecord] = []
         self._max = max_records
+        self._lock = threading.Lock()
 
     def add(self, record: TimingRecord) -> None:
-        self._records.append(record)
-        if len(self._records) > self._max:
-            self._records = self._records[-self._max:]
+        with self._lock:
+            if len(self._records) >= self._max:
+                # LRU eviction: remove the oldest record
+                self._records.pop(0)
+            self._records.append(record)
 
     def recent(self, n: int = 50) -> list[TimingRecord]:
-        return self._records[-n:]
+        with self._lock:
+            return list(self._records[-n:])
 
     def slow_queries(self, threshold_ms: float = SLOW_QUERY_THRESHOLD_MS) -> list[TimingRecord]:
-        return [r for r in self._records if r.elapsed_ms >= threshold_ms]
+        with self._lock:
+            return [r for r in self._records if r.elapsed_ms >= threshold_ms]
 
     def clear(self) -> None:
-        self._records.clear()
+        with self._lock:
+            self._records.clear()
 
     @property
     def count(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
 
 
 # Global timing store

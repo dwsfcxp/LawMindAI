@@ -31,6 +31,8 @@ class UserRegister(BaseModel):
     def password_min_length(cls, v):
         if len(v) < 6:
             raise ValueError("密码长度不能少于6位")
+        if len(v) > 128:
+            raise ValueError("密码长度不能超过128位")
         return v
 
 

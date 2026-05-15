@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Briefcase, FileText, Search, Plus, ArrowRight,
@@ -180,7 +180,7 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString('zh-CN');
 }
 
-export default function Dashboard() {
+function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState({ cases: 0, docs: 0 });
   const [recentCases, setRecentCases] = useState<Case[]>([]);
@@ -207,17 +207,13 @@ export default function Dashboard() {
     async function fetchData() {
       setError('');
       try {
-        const [cases, docs] = await Promise.all([
-          caseApi.list({ limit: 5 }),
-          documentApi.list({ limit: 5 }),
-        ]);
         const [allCasesData, allDocs] = await Promise.all([
           caseApi.list({ limit: 1000 }),
           documentApi.list({ limit: 1000 }),
         ]);
         setStats({ cases: allCasesData.length, docs: allDocs.length });
-        setRecentCases(cases);
-        setRecentDocs(docs);
+        setRecentCases(allCasesData.slice(0, 5));
+        setRecentDocs(allDocs.slice(0, 5));
         setAllCases(allCasesData);
       } catch {
         setError('加载数据失败，请刷新页面重试');
@@ -228,7 +224,10 @@ export default function Dashboard() {
     fetchData();
   }, []);
 
-  const activityFeed = buildActivityFeed(recentCases, recentDocs);
+  const activityFeed = useMemo(
+    () => buildActivityFeed(recentCases, recentDocs),
+    [recentCases, recentDocs],
+  );
 
   if (loading) {
     return (
@@ -463,3 +462,5 @@ export default function Dashboard() {
     </div>
   );
 }
+
+export default React.memo(Dashboard);

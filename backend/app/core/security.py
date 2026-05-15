@@ -1,4 +1,5 @@
 import re
+import threading
 import time
 import logging
 from collections import defaultdict
@@ -29,6 +30,31 @@ MAX_QUERY_LENGTH = 2000
 # In-memory rate limiter (simple sliding-window per key)
 # ---------------------------------------------------------------------------
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
+_RATE_LIMIT_MAX_KEYS = 10000
+_rate_limit_last_cleanup = time.monotonic()
+_RATE_LIMIT_CLEANUP_INTERVAL = 300  # Run cleanup every 5 minutes
+
+
+def _cleanup_rate_limit_store() -> None:
+    """Remove stale keys and expired entries to prevent unbounded memory growth."""
+    global _rate_limit_last_cleanup
+    now = time.monotonic()
+    if now - _rate_limit_last_cleanup < _RATE_LIMIT_CLEANUP_INTERVAL:
+        return
+    _rate_limit_last_cleanup = now
+    stale_keys = []
+    for key, timestamps in _rate_limit_store.items():
+        # Remove entries older than the longest standard window (3600s)
+        cutoff = now - 3600
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.pop(0)
+        if not timestamps:
+            stale_keys.append(key)
+    for key in stale_keys:
+        del _rate_limit_store[key]
+    if stale_keys:
+        logger.debug("Rate limit cleanup: removed %d stale keys", len(stale_keys))
 
 
 def check_rate_limit(key: str, max_requests: int = 60, window_seconds: int = 60) -> bool:
@@ -37,16 +63,19 @@ def check_rate_limit(key: str, max_requests: int = 60, window_seconds: int = 60)
     Uses a simple in-memory sliding-window counter. Suitable for single-process
     deployments; for multi-process production, replace with Redis.
     """
-    now = time.monotonic()
-    cutoff = now - window_seconds
-    timestamps = _rate_limit_store[key]
-    # Prune old entries
-    while timestamps and timestamps[0] < cutoff:
-        timestamps.pop(0)
-    if len(timestamps) >= max_requests:
-        return False
-    timestamps.append(now)
-    return True
+    with _rate_limit_lock:
+        _cleanup_rate_limit_store()
+        now = time.monotonic()
+        cutoff = now - window_seconds
+        timestamps = _rate_limit_store[key]
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.pop(0)
+        if len(_rate_limit_store) > _RATE_LIMIT_MAX_KEYS:
+            return False
+        if len(timestamps) >= max_requests:
+            return False
+        timestamps.append(now)
+        return True
 
 
 def check_rate_limit_with_headers(
@@ -58,30 +87,31 @@ def check_rate_limit_with_headers(
     - X-RateLimit-Remaining: remaining requests in the window
     - Retry-After: seconds until the window resets (only when rate limited)
     """
-    now = time.monotonic()
-    cutoff = now - window_seconds
-    timestamps = _rate_limit_store[key]
+    with _rate_limit_lock:
+        _cleanup_rate_limit_store()
+        now = time.monotonic()
+        cutoff = now - window_seconds
+        timestamps = _rate_limit_store[key]
 
-    # Prune old entries
-    while timestamps and timestamps[0] < cutoff:
-        timestamps.pop(0)
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.pop(0)
 
-    remaining = max(0, max_requests - len(timestamps))
-    headers = {
-        "X-RateLimit-Remaining": str(remaining),
-        "X-RateLimit-Limit": str(max_requests),
-    }
+        remaining = max(0, max_requests - len(timestamps))
+        headers = {
+            "X-RateLimit-Remaining": str(remaining),
+            "X-RateLimit-Limit": str(max_requests),
+        }
 
-    if len(timestamps) >= max_requests:
-        # Calculate when the oldest request in the window will expire
-        oldest = timestamps[0] if timestamps else now
-        retry_after = max(1, int(oldest + window_seconds - now) + 1)
-        headers["Retry-After"] = str(retry_after)
-        return False, headers
+        if len(_rate_limit_store) > _RATE_LIMIT_MAX_KEYS or len(timestamps) >= max_requests:
+            oldest = timestamps[0] if timestamps else now
+            retry_after = max(1, int(oldest + window_seconds - now) + 1)
+            headers["Retry-After"] = str(retry_after)
+            headers["X-RateLimit-Remaining"] = "0"
+            return False, headers
 
-    timestamps.append(now)
-    headers["X-RateLimit-Remaining"] = str(remaining - 1)
-    return True, headers
+        timestamps.append(now)
+        headers["X-RateLimit-Remaining"] = str(remaining - 1)
+        return True, headers
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +241,7 @@ async def get_current_user(
 
 
 # ---------------------------------------------------------------------------
-# File upload security helpers (Iteration 26)
+# File upload security helpers
 # ---------------------------------------------------------------------------
 
 # Strict extension-to-MIME mapping for upload allowlisting

@@ -25,6 +25,8 @@ class SearchQuery(BaseModel):
     def query_must_not_be_empty(cls, v):
         if not v or not v.strip():
             raise ValueError("搜索内容不能为空")
+        if len(v.strip()) > 2000:
+            raise ValueError("搜索内容不能超过2000字")
         return v.strip()
 
     @field_validator("top_k")

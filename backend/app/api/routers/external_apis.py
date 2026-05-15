@@ -202,7 +202,7 @@ async def list_apis(
         items = [_row_to_out(r).model_dump(mode="json") for r in result.scalars().all()]
         return JSONResponse(content=items, headers={"X-Total-Count": str(len(items))})
     except Exception as e:
-        logger.error(f"List external APIs failed: {e}")
+        logger.error("List external APIs failed: %s", e)
         raise HTTPException(500, "查询外部API列表失败")
 
 
@@ -233,13 +233,13 @@ async def create_api(
             try:
                 register_dynamic_adapter(row)
             except Exception as e:
-                logger.warning(f"Failed to register adapter: {e}")
+                logger.warning("Failed to register adapter: %s", e)
 
         return _row_to_out(row)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Create external API failed: {e}")
+        logger.error("Create external API failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "创建外部API配置失败")
 
@@ -283,13 +283,13 @@ async def update_api(
             try:
                 register_dynamic_adapter(row)
             except Exception as e:
-                logger.warning(f"Failed to re-register adapter: {e}")
+                logger.warning("Failed to re-register adapter: %s", e)
 
         return _row_to_out(row)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update external API failed: {e}")
+        logger.error("Update external API failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "更新外部API配置失败")
 
@@ -318,7 +318,7 @@ async def delete_api(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete external API failed: {e}")
+        logger.error("Delete external API failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除外部API配置失败")
 
@@ -347,7 +347,7 @@ async def toggle_api(
         try:
             register_dynamic_adapter(row)
         except Exception as e:
-            logger.warning(f"Failed to register adapter: {e}")
+            logger.warning("Failed to register adapter: %s", e)
     else:
         unregister_dynamic_adapter(row.id)
 
@@ -402,9 +402,10 @@ async def test_api(
                 latency_ms=latency,
             )
     except Exception as e:
+        logger.error("External API test failed: %s", e)
         return ExternalApiTestResult(
             success=False,
-            message=f"测试失败: {str(e)[:200]}",
+            message="测试失败，请检查URL和认证配置",
         )
 
 

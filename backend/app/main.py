@@ -126,6 +126,38 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security-related headers to all responses."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests with excessively large bodies."""
+
+    MAX_BODY_BYTES = 100 * 1024 * 1024  # 100MB
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "请求体过大"},
+            )
+        return await call_next(request)
+
+
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -292,10 +324,13 @@ def create_app() -> FastAPI:
             content={"detail": "请求超时，请稍后重试"},
         )
 
-    # Middleware order matters: last added = first executed.
-    # We want: RequestID -> Timing -> CORS -> app
-    app.add_middleware(RequestTimingMiddleware)
+    # Middleware order matters: last added = first executed (outermost).
+    # Desired execution order (outermost to innermost):
+    #   Timing -> SecurityHeaders -> RequestID -> CORS -> app
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RequestTimingMiddleware)
 
     # CORS -- restrict methods, support credentials
     app.add_middleware(

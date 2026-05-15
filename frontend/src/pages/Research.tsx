@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { BookOpen, Loader2, Trash2, FileText, Upload, Download, ChevronDown, ChevronRight, AlertCircle, X, Copy, Check, Columns, Type, PanelLeftClose, PanelLeft } from 'lucide-react';
+import axios, { CancelTokenSource } from 'axios';
 import { researchApi, caseApi, documentApi, knowledgeApi, type ResearchReport as ReportType, type Case as CaseType, type KnowledgeItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -83,6 +84,12 @@ export default function Research() {
   // Mobile panel toggle
   const [showSidebar, setShowSidebar] = useState(true);
 
+  // Request cancellation ref
+  const cancelTokenRef = useRef<CancelTokenSource | null>(null);
+
+  // Memoized filtered source options (excludes already-selected for UI purposes)
+  const filteredSourceOptions = useMemo(() => sourceOptions, []);
+
   const sourceOptions = [
     { key: 'vector_db', label: '本地向量库（案例+法条）' },
     { key: 'ai_knowledge', label: 'AI法律知识' },
@@ -127,6 +134,14 @@ export default function Research() {
 
   const handleResearch = useCallback(async () => {
     if (!query.trim()) return;
+
+    // Cancel any previous in-flight request
+    if (cancelTokenRef.current) {
+      cancelTokenRef.current.cancel('New research request initiated');
+    }
+    const source = axios.CancelToken.source();
+    cancelTokenRef.current = source;
+
     setGenerating(true);
     setCurrentReport(null);
     try {
@@ -141,7 +156,7 @@ export default function Research() {
         }
       }
 
-      const report = await researchApi.create({ query: researchQuery, sources, case_id: caseId || undefined }, 'research');
+      const report = await researchApi.create({ query: researchQuery, sources, case_id: caseId || undefined }, 'research', source.token);
       setCurrentReport(report);
       setHistory([report, ...history]);
       toast({ type: 'success', title: '研究完成', description: `已从${sources.length}个来源生成报告` });

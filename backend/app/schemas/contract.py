@@ -2,7 +2,30 @@
 
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+
+class ContractCreate(BaseModel):
+    title: str
+    description: str | None = None
+    case_id: int | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_must_be_valid(cls, v):
+        if not v or not v.strip():
+            raise ValueError("合同标题不能为空")
+        v = v.strip()
+        if len(v) > 200:
+            raise ValueError("合同标题不能超过200个字符")
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def description_max_length(cls, v):
+        if v is not None and len(v) > 50000:
+            raise ValueError("合同描述不能超过50000个字符")
+        return v
 
 
 class ContractOut(BaseModel):

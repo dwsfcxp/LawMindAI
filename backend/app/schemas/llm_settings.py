@@ -21,16 +21,26 @@ class LLMSettingsCreate(BaseModel):
 
     @field_validator("base_url")
     @classmethod
-    def base_url_must_not_be_empty(cls, v):
+    def base_url_must_be_valid(cls, v):
         if not v or not v.strip():
             raise ValueError("API地址不能为空")
-        return v.strip().rstrip("/")
+        v = v.strip().rstrip("/")
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("API地址必须以 http:// 或 https:// 开头")
+        return v
+
+    @field_validator("model_name")
+    @classmethod
+    def model_name_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("模型名称不能为空")
+        return v.strip()
 
     @field_validator("max_tokens")
     @classmethod
     def max_tokens_range(cls, v):
-        if v < 1 or v > 32768:
-            raise ValueError("max_tokens 必须在 1-32768 之间")
+        if v < 1 or v > 128000:
+            raise ValueError("max_tokens 必须在 1-128000 之间")
         return v
 
 

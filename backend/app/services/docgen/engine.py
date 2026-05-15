@@ -56,6 +56,10 @@ class DocumentGenerationEngine:
     # Maximum word count for generated content to prevent runaway generation
     MAX_CONTENT_WORDS = 8000
 
+    # Maximum input length for case facts
+    MAX_CASE_FACTS_LENGTH = 200000  # 200K chars
+    MIN_CASE_FACTS_LENGTH = 5  # Minimum meaningful input
+
     async def _call_claude(self, system: str, user: str, max_tokens: int = 4096) -> str:
         try:
             response = await self.client.messages.create(
@@ -78,16 +82,16 @@ class DocumentGenerationEngine:
             error_type = type(e).__name__
             if 'ConnectionError' in error_type or 'connection' in str(e).lower():
                 logger.error(f"AI API connection error: {e}")
-                raise RuntimeError(f"AI服务连接失败，请检查网络: {e}")
+                raise RuntimeError("AI服务连接失败，请检查网络后重试")
             if 'RateLimitError' in error_type or 'rate' in str(e).lower():
                 logger.error("AI API rate limit hit")
                 raise RuntimeError("AI服务请求过于频繁，请稍后再试")
             if 'StatusError' in error_type or hasattr(e, 'status_code'):
                 status_code = getattr(e, 'status_code', 'unknown')
-                message = getattr(e, 'message', str(e))
-                logger.error(f"AI API error {status_code}: {message}")
-                raise RuntimeError(f"AI服务错误({status_code}): {message}")
-            raise
+                logger.error("AI API error %s: %s", status_code, e)
+                raise RuntimeError("AI服务暂时不可用，请稍后重试")
+            logger.error("AI API unexpected error: %s", e)
+            raise RuntimeError("文书生成服务暂时不可用，请稍后重试")
 
     def _parse_json_response(self, text: str) -> dict:
         text = text.strip()
@@ -202,6 +206,23 @@ class DocumentGenerationEngine:
         research_context: str | None = None,
     ) -> dict:
         import asyncio
+
+        # Input validation
+        if not case_facts or not case_facts.strip():
+            return {
+                "title": DOC_TYPE_NAMES.get(doc_type, doc_type),
+                "content": "案件事实描述为空，无法生成文书。",
+                "metadata": {},
+            }
+        if len(case_facts) < DocumentGenerationEngine.MIN_CASE_FACTS_LENGTH:
+            return {
+                "title": DOC_TYPE_NAMES.get(doc_type, doc_type),
+                "content": "案件事实描述过短，请提供更详细的案件信息。",
+                "metadata": {},
+            }
+        if len(case_facts) > DocumentGenerationEngine.MAX_CASE_FACTS_LENGTH:
+            logger.warning("Case facts truncated: %d > %d chars", len(case_facts), DocumentGenerationEngine.MAX_CASE_FACTS_LENGTH)
+            case_facts = case_facts[:DocumentGenerationEngine.MAX_CASE_FACTS_LENGTH]
 
         # 1) 解析案件
         parsed_case = await self.parse_case(case_facts)
@@ -834,8 +855,8 @@ class DocumentGenerationEngine:
                 documents.append({
                     "doc_type": doc_type,
                     "title": DOC_TYPE_NAMES.get(doc_type, doc_type),
-                    "content": f"生成失败: {e}",
-                    "metadata": {"error": str(e)},
+                    "content": "文书生成失败，请稍后重试",
+                    "metadata": {"error": "generation_failed"},
                 })
 
         # 5) 一致性检查

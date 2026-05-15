@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+MAX_CONTENT_LENGTH = 200000
+
 
 # ---------------------------------------------------------------------------
 # Quality check response schema
@@ -74,6 +76,7 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    limit = min(max(limit, 1), 100)
     base_filter = Document.owner_id == current_user.id
     # Count query
     count_q = select(func.count(Document.id)).where(base_filter)
@@ -131,6 +134,9 @@ async def generate_document(
     if not template:
         raise HTTPException(400, f"未找到类型为 '{data.type}' 的文书模板，请先创建模板")
 
+    if data.case_facts and len(data.case_facts) > MAX_CONTENT_LENGTH:
+        raise HTTPException(400, f"案件事实内容不能超过 {MAX_CONTENT_LENGTH} 个字符")
+
     # 查询研究报告作为生成依据
     research_context = ""
     if data.research_report_ids:
@@ -159,10 +165,10 @@ async def generate_document(
             research_context=research_context or None,
         )
     except RuntimeError as e:
-        raise HTTPException(503, f"文书生成服务暂时不可用: {str(e)[:200]}")
+        raise HTTPException(503, "文书生成服务暂时不可用，请稍后重试")
     except Exception as e:
         logger.exception(f"Document generation failed: {e}")
-        raise HTTPException(500, f"文书生成失败: {str(e)[:200]}")
+        raise HTTPException(500, "文书生成失败，请稍后重试")
 
     # 保存文书
     doc = Document(
@@ -229,10 +235,10 @@ async def generate_document_bundle(
             research_context=research_context or None,
         )
     except RuntimeError as e:
-        raise HTTPException(503, f"文书集合生成服务暂时不可用: {str(e)[:200]}")
+        raise HTTPException(503, "文书集合生成服务暂时不可用，请稍后重试")
     except Exception as e:
         logger.exception(f"Bundle generation failed: {e}")
-        raise HTTPException(500, f"文书集合生成失败: {str(e)[:200]}")
+        raise HTTPException(500, "文书集合生成失败，请稍后重试")
 
     # 保存所有文书到数据库
     saved_docs = []
@@ -366,7 +372,7 @@ async def review_document(
     try:
         reviewed_content = await engine.review(doc.content, doc.type)
     except RuntimeError as e:
-        raise HTTPException(503, f"文书审查服务暂时不可用: {str(e)[:200]}")
+        raise HTTPException(503, "文书审查服务暂时不可用，请稍后重试")
     doc.content = reviewed_content
     doc.status = "reviewed"
     await db.flush()
@@ -409,9 +415,9 @@ async def quality_check_document(
     try:
         check_result = await engine.quality_check(doc.content, doc.type, parsed_case)
     except RuntimeError as e:
-        raise HTTPException(503, f"质量核查服务暂时不可用: {str(e)[:200]}")
+        raise HTTPException(503, "质量核查服务暂时不可用，请稍后重试")
     except Exception as e:
         logger.exception(f"Quality check failed: {e}")
-        raise HTTPException(500, f"质量核查失败: {str(e)[:200]}")
+        raise HTTPException(500, "质量核查失败，请稍后重试")
 
     return QualityCheckResponse(document_id=doc_id, quality_check=check_result)

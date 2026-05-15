@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -52,6 +52,28 @@ logger.debug(
     settings.DATABASE_URL.split("@")[-1] if "@" in settings.DATABASE_URL else "sqlite",
     engine_kwargs.get("pool_size", "default"),
 )
+
+# ── Connection pool event listeners ─────────────────────────────────────────
+
+pool = engine.pool
+
+
+@event.listens_for(pool, "checkout")
+def _on_checkout(dbapi_conn, connection_record, proxy):
+    logger.debug(
+        "Pool checkout: dbapi_conn=%s connection_record=%s",
+        id(dbapi_conn),
+        id(connection_record),
+    )
+
+
+@event.listens_for(pool, "checkin")
+def _on_checkin(dbapi_conn, connection_record):
+    logger.debug(
+        "Pool checkin: dbapi_conn=%s connection_record=%s",
+        id(dbapi_conn),
+        id(connection_record),
+    )
 
 # ── Session factory ─────────────────────────────────────────────────────────
 AsyncSessionLocal = async_sessionmaker(
@@ -119,6 +141,41 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             logger.debug("DB session closed: sid=%s", session_id)
 
 
+async def get_db_readonly() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency — yields a read-only database session (no auto-commit).
+
+    Use this for endpoints that only read data. Skipping the commit avoids
+    an unnecessary round-trip and reduces write-load on the database.
+    """
+    session_id = id(object())
+    logger.debug("DB readonly session opened: sid=%s", session_id)
+    start = time.monotonic()
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            elapsed = time.monotonic() - start
+            if elapsed > 2.0:
+                logger.warning(
+                    "Slow DB readonly session: sid=%s elapsed=%.3fs",
+                    session_id, elapsed,
+                )
+            else:
+                logger.debug(
+                    "DB readonly session closed: sid=%s elapsed=%.3fs",
+                    session_id, elapsed,
+                )
+        except Exception:
+            await session.rollback()
+            elapsed = time.monotonic() - start
+            logger.debug(
+                "DB readonly session rolled back: sid=%s elapsed=%.3fs",
+                session_id, elapsed,
+            )
+            raise
+        finally:
+            logger.debug("DB readonly session finalized: sid=%s", session_id)
+
+
 # ── Health check ────────────────────────────────────────────────────────────
 
 async def db_health_check() -> dict:
@@ -128,6 +185,13 @@ async def db_health_check() -> dict:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         latency_ms = (time.monotonic() - start) * 1000
+        pool = engine.pool
+        pool_stats = {
+            "pool_size": getattr(pool, "size", lambda: None)(),
+            "checked_in": getattr(pool, "checkedin", lambda: None)(),
+            "checked_out": getattr(pool, "checkedout", lambda: None)(),
+            "overflow": getattr(pool, "overflow", lambda: None)(),
+        }
         return {
             "status": "ok",
             "latency_ms": round(latency_ms, 2),
@@ -136,6 +200,7 @@ async def db_health_check() -> dict:
                 if "@" in settings.DATABASE_URL
                 else "sqlite"
             ),
+            "pool": pool_stats,
         }
     except Exception as exc:
         latency_ms = (time.monotonic() - start) * 1000

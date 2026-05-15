@@ -31,13 +31,13 @@ async def verify_law(
         start = time.time()
         engine = LawVerificationEngine()
         result = await engine.verify_single(data)
-        logger.info(f"Law verification took {time.time()-start:.2f}s for {data.law_name} {data.article_number}")
+        logger.info("Law verification took %.2fs for %s %s", time.time() - start, data.law_name, data.article_number)
         return result
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Law verification failed: {e}")
-        raise HTTPException(500, f"法条核查失败: {str(e)[:200]}")
+        logger.error("Law verification failed: %s", e)
+        raise HTTPException(500, "法条核查失败，请稍后重试")
 
 
 @router.post("/verify-batch", response_model=BatchVerifyResponse)
@@ -65,5 +65,5 @@ async def verify_batch(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Batch verification failed: {e}")
-        raise HTTPException(500, f"批量核查失败: {str(e)[:200]}")
+        logger.error("Batch verification failed: %s", e)
+        raise HTTPException(500, "批量核查失败，请稍后重试")

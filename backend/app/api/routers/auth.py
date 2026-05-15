@@ -1,6 +1,7 @@
 """认证路由 — 注册、登录、用户信息管理。"""
 
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,36 @@ from app.schemas.auth import UserRegister, UserLogin, Token, UserOut, UserUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Failed login tracking for account lockout
+_FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_MAX_FAILED_ATTEMPTS = 5
+_LOCKOUT_DURATION = 900  # 15 minutes
+
+
+def _check_account_lockout(email: str) -> bool:
+    """Return True if account is locked due to too many failed attempts."""
+    import time
+    attempts = _FAILED_LOGIN_ATTEMPTS.get(email, [])
+    now = time.monotonic()
+    # Remove expired attempts
+    cutoff = now - _LOCKOUT_DURATION
+    attempts = [t for t in attempts if t > cutoff]
+    _FAILED_LOGIN_ATTEMPTS[email] = attempts
+    return len(attempts) >= _MAX_FAILED_ATTEMPTS
+
+
+def _record_failed_login(email: str) -> None:
+    """Record a failed login attempt."""
+    import time
+    if email not in _FAILED_LOGIN_ATTEMPTS:
+        _FAILED_LOGIN_ATTEMPTS[email] = []
+    _FAILED_LOGIN_ATTEMPTS[email].append(time.monotonic())
+
+
+def _clear_failed_logins(email: str) -> None:
+    """Clear failed login attempts after successful login."""
+    _FAILED_LOGIN_ATTEMPTS.pop(email, None)
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
@@ -80,12 +111,23 @@ async def login(
         )
 
     try:
+        # Check account lockout
+        if _check_account_lockout(data.email):
+            raise HTTPException(
+                429,
+                "账户已锁定，请15分钟后再试",
+                headers=rl_headers,
+            )
+
         result = await db.execute(select(User).where(User.email == data.email))
         user = result.scalar_one_or_none()
         if not user or not verify_password(data.password, user.password_hash):
+            _record_failed_login(data.email)
             raise HTTPException(status_code=401, detail="邮箱或密码错误")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账户已被禁用")
+
+        _clear_failed_logins(data.email)
         token = create_access_token({"sub": str(user.id), "email": user.email})
         return Token(access_token=token)
     except HTTPException:

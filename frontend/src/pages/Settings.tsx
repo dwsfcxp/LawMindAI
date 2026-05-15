@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Settings as SettingsIcon, Plus, Trash2, CheckCircle, XCircle, Loader2, Zap, Globe, Building2, Lock, Database, Link2, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Server, AlertCircle, Download, Upload, Save, RotateCcw, Activity, RefreshCw, TestTube, BarChart3, ShieldCheck, Clock } from 'lucide-react';
 import { llmSettingsApi, externalApiConfigApi, appConfigApi, apiClient, type LLMSetting, type ExternalApiConfig, type ExternalApiPreset, type AppConfigItem } from '@/lib/api';
 import { useToast } from '@/lib/toast';
@@ -239,7 +239,7 @@ export default function Settings() {
     return Object.keys(errors).length === 0;
   };
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!validateLlmForm()) return;
     setLlmFormError('');
     try {
@@ -252,25 +252,27 @@ export default function Settings() {
       else { await llmSettingsApi.create(form); toast({ type: 'success', title: '配置已创建' }); }
       setShowModal(false); setEditingId(null); resetForm(); setFormValidation({}); loadConfigs();
     } catch { toast({ type: 'error', title: '保存失败', description: '请检查输入' }); }
-  };
+  }, [editingId, form, toast, loadConfigs]);
 
-  const handleQuickAdd = (preset: Preset) => {
+  const handleQuickAdd = useCallback((preset: Preset) => {
     setForm({ name: preset.name, base_url: preset.base_url, api_key: '', model_name: preset.model_name, max_tokens: preset.max_tokens, is_default: false });
     setEditingId(null); setShowModal(true); setFormValidation({});
-  };
+  }, []);
 
-  const handleEdit = (c: LLMSetting) => {
+  const handleEdit = useCallback((c: LLMSetting) => {
     setForm({ name: c.name, base_url: c.base_url, api_key: '', model_name: c.model_name, max_tokens: c.max_tokens, is_default: c.is_default });
     setEditingId(c.id); setShowModal(true); setFormValidation({});
-  };
+  }, []);
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('确定删除此配置？')) return;
-    try { await llmSettingsApi.delete(id); toast({ type: 'success', title: '配置已删除' }); loadConfigs(); }
-    catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
-  };
+  const handleDelete = useCallback((id: number) => {
+    setConfirmDialog({ message: '确定删除此配置？', onConfirm: async () => {
+      try { await llmSettingsApi.delete(id); toast({ type: 'success', title: '配置已删除' }); loadConfigs(); }
+      catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
+      setConfirmDialog(null);
+    }});
+  }, [toast, loadConfigs]);
 
-  const handleTest = async (c: LLMSetting) => {
+  const handleTest = useCallback(async (c: LLMSetting) => {
     setTesting(c.id); setTestResult(null);
     trackApiCall(c.name);
     try {
@@ -281,32 +283,32 @@ export default function Settings() {
       else toast({ type: 'warning', title: '连接测试失败', description: result.message });
     } catch (e: any) { setTestResult({ id: c.id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
     finally { setTesting(null); }
-  };
+  }, [toast]);
 
-  const handleQuickTest = async (preset: Preset) => {
+  const handleQuickTest = useCallback(async (preset: Preset) => {
     setQuickTesting(preset.key); setTestResult(null);
     try {
       const result = await llmSettingsApi.testConnectivity({ base_url: preset.base_url, api_key: '', model_name: preset.model_name });
       setTestResult({ id: -1, success: result.success, message: `${preset.name}: ${result.message}` });
     } catch (e: any) { setTestResult({ id: -1, success: false, message: `${preset.name}: 测试失败` }); }
     finally { setQuickTesting(null); }
-  };
+  }, []);
 
-  const resetForm = () => setForm({ name: '', base_url: '', api_key: '', model_name: '', max_tokens: 4096, is_default: false });
+  const resetForm = useCallback(() => setForm({ name: '', base_url: '', api_key: '', model_name: '', max_tokens: 4096, is_default: false }), []);
 
   // 外部API配置逻辑
-  const loadApiConfigs = async () => {
+  const loadApiConfigs = useCallback(async () => {
     try { setApiLoading(true); const data = await externalApiConfigApi.list(); setApiConfigs(data); }
     catch { setPageError('加载外部API配置失败'); }
     finally { setApiLoading(false); }
-  };
+  }, []);
 
-  const loadApiPresets = async () => {
+  const loadApiPresets = useCallback(async () => {
     try { const data = await externalApiConfigApi.presets(); setApiPresets(data); }
     catch { /* API presets load failed */ }
-  };
+  }, []);
 
-  const handleApiSave = async () => {
+  const handleApiSave = useCallback(async () => {
     if (apiForm.base_url && !/^https?:\/\//.test(apiForm.base_url.trim())) {
       setApiFormError('Base URL 必须以 http:// 或 https:// 开头');
       return;
@@ -335,9 +337,9 @@ export default function Settings() {
       else { await externalApiConfigApi.create(apiForm); toast({ type: 'success', title: '外部接口已创建' }); }
       setShowApiModal(false); setEditingApiId(null); setApiForm({ ...emptyApiForm }); setShowApiAdvanced(false); setApiFormError(''); loadApiConfigs();
     } catch { toast({ type: 'error', title: '保存失败', description: '请检查输入' }); }
-  };
+  }, [editingApiId, apiForm, toast, loadApiConfigs]);
 
-  const handleApiEdit = (c: ExternalApiConfig) => {
+  const handleApiEdit = useCallback((c: ExternalApiConfig) => {
     setApiForm({
       name: c.name, description: c.description, base_url: c.base_url,
       auth_type: c.auth_type, auth_token: '', auth_header_name: c.auth_header_name,
@@ -349,20 +351,22 @@ export default function Settings() {
       request_template: c.request_template, is_enabled: c.is_enabled, category: c.category,
     });
     setEditingApiId(c.id); setShowApiModal(true);
-  };
+  }, []);
 
-  const handleApiDelete = async (id: number) => {
-    if (!confirm('确定删除此外部API配置？')) return;
-    try { await externalApiConfigApi.delete(id); toast({ type: 'success', title: '外部接口已删除' }); loadApiConfigs(); }
-    catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
-  };
+  const handleApiDelete = useCallback((id: number) => {
+    setConfirmDialog({ message: '确定删除此外部API配置？', onConfirm: async () => {
+      try { await externalApiConfigApi.delete(id); toast({ type: 'success', title: '外部接口已删除' }); loadApiConfigs(); }
+      catch (e: any) { toast({ type: 'error', title: '删除失败', description: e.response?.data?.detail || '未知错误' }); }
+      setConfirmDialog(null);
+    }});
+  }, [toast, loadApiConfigs]);
 
-  const handleApiToggle = async (id: number) => {
+  const handleApiToggle = useCallback(async (id: number) => {
     try { await externalApiConfigApi.toggle(id); loadApiConfigs(); }
     catch (e: any) { toast({ type: 'error', title: '切换失败', description: e.response?.data?.detail || '未知错误' }); }
-  };
+  }, [loadApiConfigs, toast]);
 
-  const handleApiTest = async (id: number) => {
+  const handleApiTest = useCallback(async (id: number) => {
     setTestingApi(id); setApiTestResult(null);
     const config = apiConfigs.find(c => c.id === id);
     if (config) trackApiCall(config.name);
@@ -374,9 +378,9 @@ export default function Settings() {
       else toast({ type: 'warning', title: '接口测试失败', description: result.message });
     } catch (e: any) { setApiTestResult({ id, success: false, message: e.message || '测试失败' }); toast({ type: 'error', title: '测试失败' }); }
     finally { setTestingApi(null); }
-  };
+  }, [apiConfigs, toast]);
 
-  const handleApiPresetAdd = (preset: ExternalApiPreset) => {
+  const handleApiPresetAdd = useCallback((preset: ExternalApiPreset) => {
     setApiForm({
       ...emptyApiForm,
       name: preset.name, description: preset.description, base_url: preset.base_url,
@@ -388,27 +392,27 @@ export default function Settings() {
       category: preset.category,
     });
     setEditingApiId(null); setApiFormError(''); setShowApiModal(true);
-  };
+  }, []);
 
   // 向量DB配置逻辑
-  const loadVectorConfigs = async () => {
+  const loadVectorConfigs = useCallback(async () => {
     try { setVectorLoading(true); const data = await appConfigApi.list('vector_db'); setVectorConfigs(data); }
     catch { setPageError('加载向量配置失败'); }
     finally { setVectorLoading(false); }
-  };
+  }, []);
 
-  const handleVectorSave = async (id: number, value: string) => {
+  const handleVectorSave = useCallback(async (id: number, value: string) => {
     try { await appConfigApi.update(id, { config_value: value }); toast({ type: 'success', title: '向量配置已保存' }); loadVectorConfigs(); }
     catch { toast({ type: 'error', title: '保存失败' }); }
-  };
+  }, [toast, loadVectorConfigs]);
 
-  const handleVectorReset = async () => {
+  const handleVectorReset = useCallback(async () => {
     try { await appConfigApi.resetVectorConnection(); toast({ type: 'success', title: '向量数据库连接已重置' }); setVectorTestStatus('unknown'); }
     catch { toast({ type: 'error', title: '重置失败' }); }
-  };
+  }, [toast]);
 
   /** Test vector DB connection */
-  const handleTestVectorConnection = async () => {
+  const handleTestVectorConnection = useCallback(async () => {
     setTestingVector(true);
     try {
       const res = await apiClient.get('/vector/stats', { timeout: 15000 });
@@ -423,10 +427,10 @@ export default function Settings() {
       setVectorTestStatus('disconnected');
       toast({ type: 'error', title: '向量数据库连接失败' });
     } finally { setTestingVector(false); }
-  };
+  }, [toast]);
 
   /** Test all connections at once */
-  const handleTestAllConnections = async () => {
+  const handleTestAllConnections = useCallback(async () => {
     setTestingAll(true);
     const statuses: Record<string, 'connected' | 'disconnected' | 'checking'> = {};
 
@@ -465,10 +469,10 @@ export default function Settings() {
 
     setTestingAll(false);
     toast({ type: 'info', title: '全部连接检测完成' });
-  };
+  }, [configs, apiConfigs, toast]);
 
   // General config handlers
-  const handleGeneralSave = () => {
+  const handleGeneralSave = useCallback(() => {
     // Validation
     const maxSize = parseInt(generalConfig.max_upload_size);
     const temp = parseFloat(generalConfig.default_temperature);
@@ -485,21 +489,23 @@ export default function Settings() {
       localStorage.setItem('lawmind_general_config', configStr);
       toast({ type: 'success', title: '通用配置已保存' });
     } catch { toast({ type: 'error', title: '保存失败' }); }
-  };
+  }, [generalConfig, toast]);
 
   /** Reset all general config to defaults */
-  const handleResetDefaults = () => {
-    if (!confirm('确定恢复默认配置？这将重置所有通用设置为默认值。')) return;
-    setGeneralConfig({
-      max_upload_size: '50',
+  const handleResetDefaults = useCallback(() => {
+    setConfirmDialog({ message: '确定恢复默认配置？这将重置所有通用设置为默认值。', onConfirm: () => {
+      setGeneralConfig({
+        max_upload_size: '50',
       default_temperature: '0.7',
       default_document_format: 'docx',
-    });
-    localStorage.removeItem('lawmind_general_config');
-    toast({ type: 'success', title: '已恢复默认配置' });
-  };
+      });
+      localStorage.removeItem('lawmind_general_config');
+      toast({ type: 'success', title: '已恢复默认配置' });
+      setConfirmDialog(null);
+    }});
+  }, [toast]);
 
-  const handleExportConfig = () => {
+  const handleExportConfig = useCallback(() => {
     try {
       const exportData = {
         general: generalConfig,
@@ -514,9 +520,9 @@ export default function Settings() {
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
       toast({ type: 'success', title: '配置已导出' });
     } catch { toast({ type: 'error', title: '导出失败' }); }
-  };
+  }, [generalConfig, configs, apiConfigs, toast]);
 
-  const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportConfig = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -529,7 +535,7 @@ export default function Settings() {
     };
     reader.readAsText(file);
     e.target.value = '';
-  };
+  }, [toast]);
 
   // Load general config from localStorage on mount
   useEffect(() => {
@@ -540,9 +546,15 @@ export default function Settings() {
   }, []);
 
   // Render helpers
-  const domesticPresets = presets.filter(p => p.category === '国内');
-  const internationalPresets = presets.filter(p => p.category === '国际');
-  const configuredKeys = new Set(configs.map(c => c.name));
+  const domesticPresets = useMemo(() => presets.filter(p => p.category === '国内'), [presets]);
+  const internationalPresets = useMemo(() => presets.filter(p => p.category === '国际'), [presets]);
+  const configuredKeys = useMemo(() => new Set(configs.map(c => c.name)), [configs]);
+
+  // Memoized filtered API configs by category
+  const enabledApiConfigs = useMemo(() => apiConfigs.filter(a => a.is_enabled), [apiConfigs]);
+
+  // Confirmation dialog state (replaces browser confirm())
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
 
   const AUTH_TYPE_LABELS: Record<string, string> = {
     none: '无认证', bearer: 'Bearer Token', api_key: 'API Key', basic: 'Basic Auth', custom: '自定义',
@@ -1085,6 +1097,19 @@ export default function Settings() {
           </div>
         </div>
       </>)}
+
+      {/* Confirmation Dialog (replaces browser confirm()) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmDialog(null)} role="dialog" aria-modal="true">
+          <div className="bg-card rounded-xl shadow-lg p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-medium mb-4">{confirmDialog.message}</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDialog(null)} className="px-4 py-2 rounded-lg border text-sm hover:bg-accent">取消</button>
+              <button onClick={() => confirmDialog.onConfirm()} className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90">确定</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

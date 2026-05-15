@@ -13,6 +13,12 @@ from app.schemas.document import TemplateCreate, TemplateUpdate, TemplateOut
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+ALLOWED_TEMPLATE_TYPES = {
+    "complaint", "answer", "appeal", "counterclaim", "agency_opinion",
+    "defense_opinion", "evidence_list", "cross_examination", "legal_opinion",
+    "lawyer_letter", "contract",
+}
+
 
 @router.get("", response_model=list[TemplateOut])
 async def list_templates(
@@ -22,6 +28,9 @@ async def list_templates(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    limit = min(max(limit, 1), 100)
+    if type and type not in ALLOWED_TEMPLATE_TYPES:
+        raise HTTPException(400, f"无效的模板类型，允许值: {', '.join(sorted(ALLOWED_TEMPLATE_TYPES))}")
     try:
         team_filter = (
             and_(Template.team_id == current_user.team_id)
@@ -60,6 +69,8 @@ async def create_template(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if data.type and data.type not in ALLOWED_TEMPLATE_TYPES:
+        raise HTTPException(400, f"无效的模板类型，允许值: {', '.join(sorted(ALLOWED_TEMPLATE_TYPES))}")
     try:
         tmpl = Template(
             **data.model_dump(),

@@ -105,6 +105,17 @@ class Settings(BaseSettings):
         """Swallow APP_ENV value -- it's a backward-compat alias."""
         return v
 
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in allowed:
+            raise ValueError(
+                f"LOG_LEVEL must be one of {sorted(allowed)}, got '{v}'"
+            )
+        return upper
+
     @field_validator("CHROMA_PORT")
     @classmethod
     def validate_port(cls, v: int) -> int:

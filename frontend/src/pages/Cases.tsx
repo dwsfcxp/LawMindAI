@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   Plus, Filter, Briefcase, Search, X, ChevronLeft, ChevronRight,
   ArrowLeft, Calendar, Users, FileText, Loader2, AlertCircle, CheckCircle2,
@@ -62,13 +62,15 @@ const statusColor: Record<string, string> = {
 
 const PAGE_SIZE = 12;
 
-export default function Cases() {
+function Cases() {
   const [cases, setCases] = useState<Case[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -90,46 +92,61 @@ export default function Cases() {
   // Status update state
   const [updatingStatus, setUpdatingStatus] = useState<number | null>(null);
 
-  const fetchCases = async () => {
+  // Debounce search input
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSearchInput = useCallback((value: string) => {
+    setSearchQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDebouncedSearch(value);
+    }, 300);
+  }, []);
+
+  const fetchCases = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
+      const skip = (page - 1) * PAGE_SIZE;
       const data = await caseApi.list({
         status: statusFilter || undefined,
         case_type: typeFilter || undefined,
-        limit: 1000,
+        skip,
+        limit: PAGE_SIZE,
       });
       setCases(data);
+      // If we got a full page, estimate there may be more
+      setTotalCount(data.length < PAGE_SIZE ? skip + data.length : skip + PAGE_SIZE + 1);
     } catch {
       setError('获取案件列表失败，请重试');
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, statusFilter, typeFilter]);
 
   useEffect(() => {
     fetchCases();
-  }, [statusFilter, typeFilter]);
+  }, [fetchCases]);
 
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, typeFilter, searchQuery]);
+  }, [statusFilter, typeFilter, debouncedSearch]);
 
-  // Filter by search query
-  const filteredCases = searchQuery.trim()
-    ? cases.filter((c) =>
-        c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (c.description && c.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        (c.case_number && c.case_number.toLowerCase().includes(searchQuery.toLowerCase()))
-      )
-    : cases;
+  // Client-side filter the current page by search query
+  const filteredCases = useMemo(() => {
+    if (!debouncedSearch.trim()) return cases;
+    const q = debouncedSearch.toLowerCase();
+    return cases.filter((c) =>
+      c.title.toLowerCase().includes(q) ||
+      (c.description && c.description.toLowerCase().includes(q)) ||
+      (c.case_number && c.case_number.toLowerCase().includes(q)),
+    );
+  }, [cases, debouncedSearch]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredCases.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
-  const pagedCases = filteredCases.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const openCaseDetail = async (c: Case) => {
+  const openCaseDetail = useCallback(async (c: Case) => {
     setSelectedCase(c);
     setDetailLoading(true);
     try {
@@ -140,9 +157,9 @@ export default function Cases() {
     } finally {
       setDetailLoading(false);
     }
-  };
+  }, []);
 
-  const handleStatusUpdate = async (caseId: number, newStatus: string) => {
+  const handleStatusUpdate = useCallback(async (caseId: number, newStatus: string) => {
     setUpdatingStatus(caseId);
     setError('');
     try {
@@ -156,9 +173,9 @@ export default function Cases() {
     } finally {
       setUpdatingStatus(null);
     }
-  };
+  }, [selectedCase]);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleCreate = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
     setError('');
@@ -172,12 +189,12 @@ export default function Cases() {
     } finally {
       setCreating(false);
     }
-  };
+  }, [createForm, fetchCases]);
 
-  const formatDate = (dateStr: string) => {
+  const formatDate = useCallback((dateStr: string) => {
     const d = new Date(dateStr);
     return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  };
+  }, []);
 
   // ── Case Detail View ─────────────────────────────────────────────
   if (selectedCase) {
@@ -326,7 +343,7 @@ export default function Cases() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">案件管理</h1>
-          <p className="mt-1 text-sm text-muted-foreground">共 {filteredCases.length} 个案件</p>
+          <p className="mt-1 text-sm text-muted-foreground">共 {totalCount} 个案件</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -353,7 +370,7 @@ export default function Cases() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchInput(e.target.value)}
             placeholder="搜索案件标题、描述或案号..."
             className="w-full rounded-lg border border-input bg-background py-2.5 pl-10 pr-10 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20"
           />
@@ -407,7 +424,7 @@ export default function Cases() {
             <>
               <p className="text-sm text-muted-foreground">未找到匹配 "{searchQuery}" 的案件</p>
               <button
-                onClick={() => setSearchQuery('')}
+                onClick={() => handleSearchInput('')}
                 className="mt-2 text-sm text-primary hover:underline"
               >
                 清除搜索
@@ -420,7 +437,7 @@ export default function Cases() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {pagedCases.map((c) => (
+            {filteredCases.map((c) => (
               <div
                 key={c.id}
                 onClick={() => openCaseDetail(c)}
@@ -475,7 +492,7 @@ export default function Cases() {
           {totalPages > 1 && (
             <div className="flex items-center justify-between pt-2">
               <p className="text-xs text-muted-foreground">
-                第 {safePage} / {totalPages} 页，共 {filteredCases.length} 条
+                第 {safePage} / {totalPages} 页，共 {totalCount} 条
               </p>
               <div className="flex items-center gap-1">
                 <button
@@ -581,3 +598,5 @@ export default function Cases() {
     </div>
   );
 }
+
+export default React.memo(Cases);

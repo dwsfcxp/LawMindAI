@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 CONTRACT_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
+CONTRACT_ALLOWED_STATUSES = {"pending", "parsing", "reviewing", "completed", "failed"}
 
 
 def _to_out(row: Contract, truncate: bool = False) -> dict:
@@ -40,11 +41,15 @@ def _to_out(row: Contract, truncate: bool = False) -> dict:
 @router.get("", response_model=list[ContractOut])
 async def list_contracts(
     case_id: int | None = None,
+    status: str | None = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(max(limit, 1), 100)
+    if status and status not in CONTRACT_ALLOWED_STATUSES:
+        raise HTTPException(400, f"无效的合同状态，允许值: {', '.join(sorted(CONTRACT_ALLOWED_STATUSES))}")
     try:
         base_where = Contract.owner_id == current_user.id
         # Count query
@@ -64,7 +69,7 @@ async def list_contracts(
             headers={"X-Total-Count": str(total)},
         )
     except Exception as e:
-        logger.error(f"List contracts failed: {e}")
+        logger.error("List contracts failed: %s", e)
         raise HTTPException(500, "查询合同列表失败")
 
 
@@ -123,7 +128,7 @@ async def upload_contract(
             await db.commit()
             await db.refresh(row)
         except Exception as e:
-            logger.warning(f"Auto-parse failed for contract {row.id}: {e}")
+            logger.warning("Auto-parse failed for contract %d: %s", row.id, e)
             row.status = "pending"
             await db.commit()
             await db.refresh(row)
@@ -132,7 +137,7 @@ async def upload_contract(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Upload contract failed: {e}")
+        logger.error("Upload contract failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "上传合同失败")
 
@@ -184,7 +189,7 @@ async def draft_contract(
         )
         draft_text = response.content[0].text if response.content else ""
     except Exception as e:
-        raise HTTPException(503, f"合同起草失败: {str(e)[:200]}")
+        raise HTTPException(503, "合同起草服务暂时不可用，请稍后重试")
 
     row = Contract(
         owner_id=current_user.id,
@@ -217,7 +222,7 @@ async def get_contract(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get contract failed: {e}")
+        logger.error("Get contract failed: %s", e)
         raise HTTPException(500, "查询合同失败")
 
 
@@ -271,7 +276,7 @@ async def review_contract_endpoint(
         row.risk_score = review_result["risk_score"]
         row.status = "completed"
     except Exception as e:
-        logger.error(f"Contract review failed for {contract_id}: {e}")
+        logger.error("Contract review failed for %d: %s", contract_id, e)
         row.status = "failed"
         row.review_report = "审查失败，请稍后重试。"
 
@@ -401,6 +406,6 @@ async def delete_contract(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete contract failed: {e}")
+        logger.error("Delete contract failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除合同失败")

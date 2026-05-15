@@ -10,11 +10,16 @@
 - 行距：固定值28.8pt
 - 首行缩进：2字符（约0.74cm）
 - 页码：底部居中，首页不同
+- 段间距：段前0pt，段后0pt
+- 支持水印（草稿/机密）
+- 支持文档属性（作者、标题、创建日期）
+- 主要章节之间自动分页
 """
 
 import asyncio
 import re
 import logging
+from datetime import datetime
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor, Emu
@@ -36,9 +41,9 @@ COURT_FONT_SETTINGS = {
     "body_font_fallback": "仿宋",
     "body_font_fallback2": "FangSong",
     "body_font_en": "Times New Roman",
-    "title_size": 22,       # 小二号
-    "body_size": 16,        # 三号
-    "heading_size": 16,     # 三号
+    "title_size": 22,       # 小二号 = 22pt
+    "body_size": 16,        # 三号 = 16pt
+    "heading_size": 16,     # 三号 = 16pt
     "line_spacing": 28.8,   # 固定值28.8磅
     "first_line_indent": 0.74,  # 2字符 ≈ 0.74cm（三号字）
     # 页边距：上、右、下、左（cm）
@@ -46,6 +51,9 @@ COURT_FONT_SETTINGS = {
     "margin_right": 2.6,
     "margin_bottom": 3.5,
     "margin_left": 2.8,
+    # 段间距
+    "paragraph_space_before": 0,
+    "paragraph_space_after": 0,
 }
 
 # Safe filename characters for Unicode
@@ -56,6 +64,15 @@ _XML_UNSAFE_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
 # Maximum paragraph length before forcing a page break protection split
 _MAX_PARAGRAPH_CHARS = 8000
+
+# Major section markers that should trigger a page break before them
+_MAJOR_SECTION_MARKERS = (
+    "## 一、", "## 二、", "## 三、", "## 四、", "## 五、",
+    "## 六、", "## 七、", "## 八、", "## 九、", "## 十、",
+    "## 当事人信息", "## 诉讼请求", "## 事实与理由",
+    "## 法律依据", "## 答辩意见", "## 上诉请求", "## 上诉理由",
+    "## 反诉请求", "## 代理意见", "## 辩护意见",
+)
 
 
 def _sanitize_xml_text(text: str) -> str:
@@ -82,6 +99,132 @@ def _setup_page(doc: Document):
 
         # Enable different first page header/footer
         section.different_first_page_header_footer = True
+
+
+def _set_document_properties(doc: Document, title: str, author: str = "LawMind AI"):
+    """设置Word文档属性：标题、作者、创建日期。"""
+    core_props = doc.core_properties
+    core_props.title = _sanitize_xml_text(title)
+    core_props.author = author
+    core_props.created = datetime.now()
+    core_props.modified = datetime.now()
+    core_props.category = "法律文书"
+    core_props.comments = "由LawMind AI法律助手平台生成"
+
+
+def _add_watermark(doc: Document, text: str = "草稿"):
+    """添加水印（对角线半透明文字水印）。
+
+    Supported text values: "草稿", "机密", "样本" etc.
+    This adds a watermark to the default header of each section.
+    """
+    if not text or len(text) > 10:
+        return
+
+    for section in doc.sections:
+        header = section.header
+        header.is_linked_to_previous = False
+
+        # Add a shape (WordArt) as watermark
+        # We use the VML shape approach for watermark
+        paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Create the watermark shape using XML
+        watermark_xml = f'''<w:r {qn("w:xmlspace")}="preserve"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:v="urn:schemas-microsoft-com:vml"
+            xmlns:o="urn:schemas-microsoft-com:office:office">
+            <w:rPr>
+                <w:noProof/>
+            </w:rPr>
+            <w:pict>
+                <v:shapetype id="_x0000_t136" coordsize="21600,21600"
+                    o:spt="136" adj="10800"
+                    path="m@7,l@8,m@5,21600l@6,21600e">
+                    <v:formulas>
+                        <v:f eqn="sum #0 0 10800"/>
+                        <v:f eqn="prod #0 2 1"/>
+                        <v:f eqn="sum 21600 0 @1"/>
+                        <v:f eqn="sum 0 0 @2"/>
+                        <v:f eqn="sum 21600 0 @3"/>
+                        <v:f eqn="if @0 @3 0"/>
+                        <v:f eqn="if @0 21600 @1"/>
+                        <v:f eqn="if @0 0 @2"/>
+                        <v:f eqn="if @0 @4 21600"/>
+                        <v:f eqn="mid @5 @6"/>
+                        <v:f eqn="mid @8 @5"/>
+                        <v:f eqn="mid @7 @8"/>
+                        <v:f eqn="mid @6 @7"/>
+                        <v:f eqn="sum @6 0 @5"/>
+                    </v:formulas>
+                    <v:path textpathok="t" o:connecttype="custom"
+                        o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800"
+                        o:connectangles="270,180,90,0"/>
+                    <v:textpath on="t" fitshape="t"/>
+                    <v:handles>
+                        <v:h position="#0,bottomRight" xrange="6629,14971"/>
+                    </v:handles>
+                    <o:lock v:ext="edit" text="t" shapetype="t"/>
+                </v:shapetype>
+                <v:shape id="PowerPlusWaterMarkObject"
+                    o:spid="_x0000_s2049"
+                    type="#_x0000_t136"
+                    style="position:absolute;margin-left:0;margin-top:0;width:500pt;height:120pt;rotation:315;z-index:-251658752;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin"
+                    o:allowincell="f"
+                    fillcolor="#C0C0C0"
+                    stroked="f">
+                    <v:fill opacity=".25"/>
+                    <v:textpath style="font-family:&quot;SimHei&quot;;font-size:1pt"
+                        string="{_sanitize_xml_text(text)}"/>
+                    <w10:wrap anchorx="margin" anchory="margin"
+                        xmlns:w10="urn:schemas-microsoft-com:office:word"/>
+                </v:shape>
+            </w:pict>
+        </w:r>'''
+
+        try:
+            from lxml import etree
+            # Parse the watermark XML snippet
+            # Use a simpler approach: add a diagonal text watermark
+            shape_element = OxmlElement("w:r")
+            rPr = OxmlElement("w:rPr")
+            noProof = OxmlElement("w:noProof")
+            rPr.append(noProof)
+            shape_element.append(rPr)
+
+            # Build the VML shape using OxmlElement for safety
+            pict = OxmlElement("w:pict")
+
+            # Simple text-based watermark using a shape
+            shape = OxmlElement("v:shape")
+            shape.set("id", "LawMindWatermark")
+            shape.set("type", "#_x0000_t136")
+            shape.set("style",
+                "position:absolute;margin-left:0;margin-top:0;"
+                "width:450pt;height:100pt;rotation:315;"
+                "z-index:-251658752;"
+                "mso-position-horizontal:center;"
+                "mso-position-horizontal-relative:margin;"
+                "mso-position-vertical:center;"
+                "mso-position-vertical-relative:margin")
+            shape.set("fillcolor", "#D0D0D0")
+            shape.set("stroked", "f")
+
+            fill = OxmlElement("v:fill")
+            fill.set("opacity", ".20")
+            shape.append(fill)
+
+            textpath = OxmlElement("v:textpath")
+            textpath.set("style", 'font-family:"SimHei";font-size:60pt')
+            textpath.set("string", _sanitize_xml_text(text))
+            shape.append(textpath)
+
+            pict.append(shape)
+            shape_element.append(pict)
+            paragraph._element.append(shape_element)
+        except Exception as e:
+            logger.warning("Failed to add watermark (non-critical): %s", e)
 
 
 def _add_page_number(section):
@@ -161,12 +304,29 @@ def _set_paragraph_format(p, first_line_indent: bool = True, alignment=None, lin
     """统一设置段落格式。"""
     ls = line_spacing or COURT_FONT_SETTINGS["line_spacing"]
     p.paragraph_format.line_spacing = Pt(ls)
-    p.paragraph_format.space_after = Pt(0)
-    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(COURT_FONT_SETTINGS["paragraph_space_after"])
+    p.paragraph_format.space_before = Pt(COURT_FONT_SETTINGS["paragraph_space_before"])
     if alignment is not None:
         p.alignment = alignment
     if first_line_indent:
         p.paragraph_format.first_line_indent = Cm(COURT_FONT_SETTINGS["first_line_indent"])
+
+
+def _add_page_break(doc: Document):
+    """添加分页符。"""
+    p = doc.add_paragraph()
+    run = p.add_run()
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    run._element.append(br)
+
+
+def _should_page_break_before(stripped: str) -> bool:
+    """Check if a heading line should trigger a page break before it."""
+    for marker in _MAJOR_SECTION_MARKERS:
+        if stripped.startswith(marker):
+            return True
+    return False
 
 
 def _add_title(doc: Document, text: str):
@@ -288,6 +448,9 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
         if stripped.startswith("## "):
             has_heading = True
             in_list = False
+            # Add page break before major sections
+            if _should_page_break_before(stripped):
+                _add_page_break(doc)
             p = doc.add_paragraph()
             _set_paragraph_format(p, first_line_indent=False)
             _parse_inline_formatting(p, stripped[3:])
@@ -399,10 +562,19 @@ def _add_markdown_paragraphs(doc: Document, content: str, first_line_indent: boo
         i += 1
 
 
-async def export_to_docx(doc_record, output_dir: Path) -> str:
-    """将文书导出为符合法院格式要求的Word文档"""
+async def export_to_docx(doc_record, output_dir: Path, watermark: str | None = None) -> str:
+    """将文书导出为符合法院格式要求的Word文档
+
+    Args:
+        doc_record: Document record with title, content, etc.
+        output_dir: Directory to save the file
+        watermark: Optional watermark text (e.g. "草稿", "机密")
+    """
     doc = Document()
     _setup_page(doc)
+    _set_document_properties(doc, doc_record.title)
+    if watermark:
+        _add_watermark(doc, watermark)
     _add_title(doc, doc_record.title)
 
     # Handle empty or missing content gracefully
@@ -423,10 +595,19 @@ async def export_to_docx(doc_record, output_dir: Path) -> str:
     return str(filepath)
 
 
-async def export_research_to_docx(report_record, output_dir: Path) -> str:
-    """将研究报告导出为Word文档"""
+async def export_research_to_docx(report_record, output_dir: Path, watermark: str | None = None) -> str:
+    """将研究报告导出为Word文档
+
+    Args:
+        report_record: Research report record
+        output_dir: Directory to save the file
+        watermark: Optional watermark text (e.g. "草稿", "机密")
+    """
     doc = Document()
     _setup_page(doc)
+    _set_document_properties(doc, f"法律研究报告：{report_record.query}")
+    if watermark:
+        _add_watermark(doc, watermark)
     _add_title(doc, f"法律研究报告：{report_record.query}")
 
     # 元信息

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -20,6 +20,8 @@ import {
   Bell,
   ChevronDown,
   Loader2,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useGlobalLoading } from '@/lib/loading';
@@ -79,18 +81,56 @@ export default function Layout() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { isLoading } = useGlobalLoading();
 
+  // Dark mode support
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return document.documentElement.classList.contains('dark');
+  });
+
+  // Initialize dark mode from localStorage or system preference
+  useEffect(() => {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'dark') {
+      document.documentElement.classList.add('dark');
+      setIsDark(true);
+    } else if (stored === 'light') {
+      document.documentElement.classList.remove('dark');
+      setIsDark(false);
+    } else {
+      // No stored preference: follow system preference
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (prefersDark) {
+        document.documentElement.classList.add('dark');
+        setIsDark(true);
+      }
+    }
+  }, []);
+
+  const toggleDarkMode = () => {
+    const nextDark = !isDark;
+    setIsDark(nextDark);
+    if (nextDark) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+  };
+
   // Save last page preference on navigation
   useEffect(() => {
     savePreferences({ lastPage: location.pathname });
   }, [location.pathname]);
 
   const userStr = localStorage.getItem('user');
-  let user: { name?: string; email?: string } | null = null;
-  try {
-    user = userStr ? JSON.parse(userStr) : null;
-  } catch {
-    user = null;
-  }
+  const user = useMemo<{ name?: string; email?: string } | null>(() => {
+    try {
+      return userStr ? JSON.parse(userStr) : null;
+    } catch {
+      return null;
+    }
+  }, [userStr]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -115,13 +155,13 @@ export default function Layout() {
 
   const breadcrumbs = useBreadcrumbs();
 
-  const linkClass = ({ isActive }: { isActive: boolean }) =>
+  const linkClass = useCallback(({ isActive }: { isActive: boolean }) =>
     cn(
       'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
       isActive
         ? 'bg-primary text-primary-foreground shadow-sm'
         : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-    );
+    ), []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -288,6 +328,16 @@ export default function Layout() {
               <span className="absolute right-1.5 top-1.5 flex h-2 w-2 items-center justify-center rounded-full bg-red-500">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
               </span>
+            </button>
+
+            {/* Dark mode toggle */}
+            <button
+              onClick={toggleDarkMode}
+              className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              title={isDark ? '切换到亮色模式' : '切换到暗色模式'}
+              aria-label={isDark ? '切换到亮色模式' : '切换到暗色模式'}
+            >
+              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
 
             {/* User avatar (desktop) */}

@@ -157,8 +157,8 @@ async def reset_vector_connection(
         _reset_vector_service()
         return {"message": "向量数据库连接已重置"}
     except Exception as e:
-        logger.error(f"Reset vector connection failed: {e}")
-        raise HTTPException(500, f"重置向量数据库连接失败: {str(e)[:200]}")
+        logger.error("Reset vector connection failed: %s", e)
+        raise HTTPException(500, "重置向量数据库连接失败，请稍后重试")
 
 
 def _reset_vector_service():
@@ -168,7 +168,7 @@ def _reset_vector_service():
         if _vector_service:
             vs._vector_service = None
     except Exception as e:
-        logger.warning(f"Failed to reset vector service: {e}")
+        logger.warning("Failed to reset vector service: %s", e)
 
 
 async def _ensure_defaults(db: AsyncSession, user: User):

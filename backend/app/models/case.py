@@ -19,6 +19,8 @@ class Case(Base):
         Index("ix_cases_owner_type", "owner_id", "case_type"),
         # Composite: team-based visibility queries
         Index("ix_cases_team_id", "team_id"),
+        # Composite: team-based listing filtered by status
+        Index("ix_cases_team_status", "team_id", "status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

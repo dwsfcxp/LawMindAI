@@ -38,7 +38,7 @@ async def create_research(
         start = time.time()
         engine = LegalResearchEngine()
         result = await engine.research(data.query.strip(), data.sources, data.case_id)
-        logger.info(f"Research completed in {time.time()-start:.2f}s")
+        logger.info("Research completed in %.2fs", time.time() - start)
 
         row = ResearchReport(
             owner_id=current_user.id,
@@ -54,9 +54,9 @@ async def create_research(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Create research failed: {e}")
+        logger.error("Create research failed: %s", e)
         await db.rollback()
-        raise HTTPException(500, f"法律研究失败: {str(e)[:200]}")
+        raise HTTPException(500, "法律研究失败，请稍后重试")
 
 
 @router.get("")
@@ -94,7 +94,7 @@ async def list_research(
             headers={"X-Total-Count": str(total)},
         )
     except Exception as e:
-        logger.error(f"List research failed: {e}")
+        logger.error("List research failed: %s", e)
         raise HTTPException(500, "查询研究报告列表失败")
 
 
@@ -115,7 +115,7 @@ async def get_research(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get research failed: {e}")
+        logger.error("Get research failed: %s", e)
         raise HTTPException(500, "查询研究报告失败")
 
 
@@ -138,7 +138,7 @@ async def delete_research(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete research failed: {e}")
+        logger.error("Delete research failed: %s", e)
         await db.rollback()
         raise HTTPException(500, "删除研究报告失败")
 

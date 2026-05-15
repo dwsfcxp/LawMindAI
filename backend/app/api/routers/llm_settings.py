@@ -188,10 +188,17 @@ async def test_connectivity(
             latency_ms=latency,
         )
     except Exception as e:
-        logger.warning(f"LLM connectivity test failed: {e}")
+        logger.warning("LLM connectivity test failed: %s", e)
+        msg = "连接失败"
+        if "timeout" in str(e).lower():
+            msg = "连接超时，请检查网络或API地址"
+        elif "401" in str(e) or "auth" in str(e).lower():
+            msg = "API Key 无效，请检查密钥是否正确"
+        elif "connection" in str(e).lower():
+            msg = "无法连接到服务器，请检查API地址"
         return ConnectivityTestResult(
             success=False,
-            message=f"连接失败: {str(e)[:200]}",
+            message=msg,
             model=data.model_name,
         )
 

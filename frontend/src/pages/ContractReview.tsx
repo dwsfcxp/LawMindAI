@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Upload, FileText, Trash2, Download, Loader2, ShieldCheck, AlertTriangle, AlertCircle, Info, ChevronDown, ChevronRight, FileDown, PenLine, X, FileUp, CheckCircle2, Clock, Columns2, ArrowRightLeft, Sparkles, GitCompare, Eye } from 'lucide-react';
 import { contractApi, caseApi, type ContractItem, type ContractRiskItem, type Case as CaseType } from '@/lib/api';
 import { useToast } from '@/lib/toast';
@@ -302,6 +302,25 @@ export default function ContractReview() {
   const [isDragOver, setIsDragOver] = useState(false);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
+  // Confirmation dialog state (replaces browser confirm())
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
+
+  // Memoized risk level computation for the selected contract
+  const riskSummary = useMemo(() => {
+    if (!selectedContract?.risk_items) return { high: 0, medium: 0, low: 0, total: 0 };
+    const high = selectedContract.risk_items.filter(r => r.level === 'high').length;
+    const medium = selectedContract.risk_items.filter(r => r.level === 'medium').length;
+    const low = selectedContract.risk_items.filter(r => r.level === 'low').length;
+    return { high, medium, low, total: high + medium + low };
+  }, [selectedContract?.risk_items]);
+
+  // Memoized sorted risk items
+  const sortedRiskItems = useMemo(() => {
+    if (!selectedContract?.risk_items) return [];
+    const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
+    return [...selectedContract.risk_items].sort((a, b) => (order[a.level] ?? 3) - (order[b.level] ?? 3));
+  }, [selectedContract?.risk_items]);
+
   useEffect(() => {
     caseApi.list().then(setCases).catch(() => {});
     loadContracts();
@@ -318,15 +337,15 @@ export default function ContractReview() {
     return () => document.removeEventListener('keydown', handler);
   }, [showUpload, showDraft]);
 
-  const loadContracts = async () => {
+  const loadContracts = useCallback(async () => {
     setLoading(true);
     try {
       const data = await contractApi.list();
       setContracts(data);
     } catch (e) { setError('加载合同列表失败'); } finally { setLoading(false); }
-  };
+  }, []);
 
-  const handleUpload = async () => {
+  const handleUpload = useCallback(async () => {
     const file = fileInputRef.current?.files?.[0];
     if (!file || !form.title.trim()) return;
     setUploading(true);
@@ -342,9 +361,9 @@ export default function ContractReview() {
       setError(msg);
       toast({ type: 'error', title: '上传失败', description: msg });
     } finally { setUploading(false); }
-  };
+  }, [form.title, form.case_id, toast]);
 
-  const handleReview = async (id: number) => {
+  const handleReview = useCallback(async (id: number) => {
     setReviewing(id);
     try {
       const result = await contractApi.review(id);
@@ -357,22 +376,24 @@ export default function ContractReview() {
       toast({ type: 'error', title: '审查失败', description: msg });
       loadContracts();
     } finally { setReviewing(null); }
-  };
+  }, [selectedContract, toast, loadContracts]);
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('确定删除此合同？')) return;
-    try {
-      await contractApi.delete(id);
-      setContracts((prev) => prev.filter((c) => c.id !== id));
-      if (selectedContract?.id === id) setSelectedContract(null);
-      toast({ type: 'success', title: '合同已删除' });
-    } catch (e) {
-      setError('删除失败');
-      toast({ type: 'error', title: '删除失败' });
-    }
-  };
+  const handleDelete = useCallback(async (id: number) => {
+    setConfirmDialog({ message: '确定删除此合同？', onConfirm: async () => {
+      try {
+        await contractApi.delete(id);
+        setContracts((prev) => prev.filter((c) => c.id !== id));
+        if (selectedContract?.id === id) setSelectedContract(null);
+        toast({ type: 'success', title: '合同已删除' });
+      } catch (e) {
+        setError('删除失败');
+        toast({ type: 'error', title: '删除失败' });
+      }
+      setConfirmDialog(null);
+    }});
+  }, [selectedContract, toast]);
 
-  const handleDraft = async () => {
+  const handleDraft = useCallback(async () => {
     if (!draftForm.title.trim() || !draftForm.description.trim()) return;
     setDrafting(true);
     try {
@@ -392,7 +413,7 @@ export default function ContractReview() {
       setError(msg);
       toast({ type: 'error', title: '起草失败', description: msg });
     } finally { setDrafting(false); }
-  };
+  }, [draftForm, draftFile, toast]);
 
   const handleUploadRef = useRef(handleUpload);
   handleUploadRef.current = handleUpload;
@@ -410,7 +431,7 @@ export default function ContractReview() {
     return () => document.removeEventListener('keydown', handler);
   }, [showUpload, showDraft]);
 
-  const handleExport = async (id: number, format: string) => {
+  const handleExport = useCallback(async (id: number, format: string) => {
     try {
       const blob = await contractApi.exportReport(id, format);
       const url = window.URL.createObjectURL(blob);
@@ -424,10 +445,10 @@ export default function ContractReview() {
       setError('导出失败');
       toast({ type: 'error', title: '导出失败' });
     }
-  };
+  }, [toast]);
 
   /** Suggest fixes: generate proposed amendments based on risk items */
-  const handleSuggestFixes = async () => {
+  const handleSuggestFixes = useCallback(async () => {
     if (!selectedContract) return;
     setSuggestingFixes(true);
     setSuggestedFixes(null);
@@ -452,9 +473,9 @@ export default function ContractReview() {
       setError('生成修改建议失败');
       toast({ type: 'error', title: '生成修改建议失败' });
     } finally { setSuggestingFixes(false); }
-  };
+  }, [selectedContract, toast]);
 
-  const selectContract = async (c: ContractItem) => {
+  const selectContract = useCallback(async (c: ContractItem) => {
     if (selectedContract?.id === c.id) {
       setSelectedContract(null);
       return;
@@ -468,18 +489,18 @@ export default function ContractReview() {
     } catch {
       setSelectedContract(c);
     }
-  };
+  }, [selectedContract]);
 
-  const toggleClause = (idx: number) => {
+  const toggleClause = useCallback((idx: number) => {
     setExpandedClauses(prev => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
       return next;
     });
-  };
+  }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setIsDragOver(true);
   }, []);
 
@@ -579,7 +600,7 @@ export default function ContractReview() {
 
       {/* Drag-and-drop zone */}
       {contracts.length === 0 && !loading && (
-        <div ref={dropZoneRef} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+        <div ref={dropZoneRef} onDragOver={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop}
           className={cn(
             'rounded-xl border-2 border-dashed p-8 sm:p-12 text-center transition-all',
             isDragOver ? 'border-primary bg-primary/5 scale-[1.01]' : 'border-muted-foreground/25 hover:border-primary/50',
@@ -869,11 +890,7 @@ export default function ContractReview() {
                       </button>
                     </div>
                     <div className="grid gap-3">
-                      {[...selectedContract.risk_items]
-                        .sort((a, b) => {
-                          const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
-                          return (order[a.level] ?? 3) - (order[b.level] ?? 3);
-                        })
+                      {sortedRiskItems
                         .map((risk, i) => (<div key={i}>{renderRiskBadge(risk)}</div>))}
                     </div>
                   </div>
@@ -975,6 +992,19 @@ export default function ContractReview() {
           )}
         </div>
       </div>
+
+      {/* Confirmation Dialog (replaces browser confirm()) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmDialog(null)} role="dialog" aria-modal="true">
+          <div className="bg-card rounded-xl shadow-lg p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-medium mb-4">{confirmDialog.message}</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDialog(null)} className="px-4 py-2 rounded-lg border text-sm hover:bg-accent">取消</button>
+              <button onClick={() => confirmDialog.onConfirm()} className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90">确定</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

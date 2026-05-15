@@ -1,5 +1,6 @@
 """向量检索 Schema"""
 
+import re
 from pydantic import BaseModel, field_validator
 
 
@@ -50,8 +51,11 @@ class VectorIngestRequest(BaseModel):
     @field_validator("collection")
     @classmethod
     def collection_must_be_valid(cls, v):
-        if v not in ("cases", "statutes"):
-            raise ValueError("collection 必须是 cases 或 statutes")
+        if not v or not v.strip():
+            raise ValueError("集合名称不能为空")
+        v = v.strip()
+        if not re.match(r'^[a-zA-Z0-9_]+$', v):
+            raise ValueError("集合名称只能包含字母、数字和下划线")
         return v
 
 
@@ -78,6 +82,18 @@ class VectorSearchQuery(BaseModel):
         if not v or not v.strip():
             raise ValueError("搜索内容不能为空")
         return v.strip()
+
+    @field_validator("collection")
+    @classmethod
+    def collection_must_be_alphanumeric(cls, v):
+        if v == "all":
+            return v
+        if not v or not v.strip():
+            raise ValueError("集合名称不能为空")
+        v = v.strip()
+        if not re.match(r'^[a-zA-Z0-9_]+$', v):
+            raise ValueError("集合名称只能包含字母、数字和下划线")
+        return v
 
     @field_validator("top_k")
     @classmethod

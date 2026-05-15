@@ -23,10 +23,24 @@ class ResearchRequest(BaseModel):
 
     @field_validator("query")
     @classmethod
-    def query_must_not_be_empty(cls, v):
+    def query_must_be_valid(cls, v):
         if not v or not v.strip():
             raise ValueError("研究问题不能为空")
-        return v.strip()
+        v = v.strip()
+        if len(v) > 2000:
+            raise ValueError("研究问题不能超过2000个字符")
+        return v
+
+    @field_validator("sources")
+    @classmethod
+    def sources_must_be_valid(cls, v):
+        if not v:
+            raise ValueError("数据来源列表不能为空")
+        valid_sources = {"vector_db", "ai_knowledge", "external_api"}
+        for s in v:
+            if s not in valid_sources:
+                raise ValueError(f"不支持的数据来源: {s}，可选值: {', '.join(sorted(valid_sources))}")
+        return v
 
 
 class ResearchReportOut(BaseModel):

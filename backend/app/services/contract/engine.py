@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 # Maximum characters for LLM response to prevent runaway output
 MAX_LLM_RESPONSE_CHARS = 50000
 
+# Input validation limits
+MAX_CONTRACT_LENGTH = 200000  # 200K chars max for contract text
+MIN_CONTRACT_LENGTH = 10  # Minimum meaningful contract length
+
 REVIEW_DIMENSIONS = {
     "legality": "合法性",
     "completeness": "完备性",
@@ -129,6 +133,23 @@ async def review_contract(
     - Contracts with zero risk items: reports as clean with recommendations
     - Individual dimension failures: completes review with partial results
     """
+    # Input validation
+    if not contract_text or not contract_text.strip():
+        return {
+            "report": "合同内容为空，无法进行审查。",
+            "risk_items": [],
+            "risk_score": None,
+        }
+    if len(contract_text) < MIN_CONTRACT_LENGTH:
+        return {
+            "report": "合同内容过短，无法进行有效审查，请提供完整的合同文本。",
+            "risk_items": [],
+            "risk_score": None,
+        }
+    if len(contract_text) > MAX_CONTRACT_LENGTH:
+        logger.warning("Contract text truncated: %d > %d chars", len(contract_text), MAX_CONTRACT_LENGTH)
+        contract_text = contract_text[:MAX_CONTRACT_LENGTH]
+
     settings = get_settings()
     client = create_llm_client_from_settings(settings)
     model = settings.CLAUDE_MODEL

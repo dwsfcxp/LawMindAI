@@ -4,7 +4,7 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
 
-// React.lazy for code splitting - Iteration 40
+// React.lazy for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Cases = lazy(() => import('./pages/Cases'));
 const DocumentGenerate = lazy(() => import('./pages/DocumentGenerate'));
